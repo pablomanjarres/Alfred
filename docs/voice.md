@@ -11,7 +11,7 @@ node scripts/build-voice.mjs
 The script builds the Swift package in `native/` and assembles `dist/AlfredVoice.app`. It also runs:
 
 - `AlfredVoice selftest`, which tests double-clap detection without the microphone.
-- `AlfredVoice doctor`, which checks recognizer, microphone authorization state, and audio input availability without prompting.
+- `AlfredVoice doctor`, which checks recognizer, microphone authorization state, and audio input availability without prompting. First-use permission state is reported but does not fail the build script.
 
 The helper can also run from `native/.build/release/AlfredVoice`. `src/voice.ts` discovers both locations relative to the compiled `dist/voice.js`; `ALFRED_VOICE_HELPER=/path/to/AlfredVoice` overrides discovery for tests and development.
 
@@ -35,7 +35,7 @@ Exports:
 
 ## Permissions
 
-The first real listening action may trigger macOS prompts for Microphone and Speech Recognition. `voiceStatus()` and `AlfredVoice doctor` do not prompt; they only report the current state.
+The first real listening action may trigger macOS prompts for Microphone and Speech Recognition. `voiceStatus()` and `AlfredVoice doctor` do not prompt; they only report the current state. `voiceStatus()` returns `available: false` until Speech Recognition and Microphone are authorized.
 
 The bundled app plist explains the privacy reasons:
 
