@@ -5,12 +5,13 @@ import AlfredMenuCore
 final class CodexVoiceHandoff {
   private let store: VoiceHandoffStore
   private let changed: () -> Void
+  private let taskSelection: CodexTaskSelection
   private var activeID: String?
   private var ownedStart: VoiceHandoffStartReceipt?
   private var pendingStart: VoiceHandoffStartReceipt?
 
-  init(store: VoiceHandoffStore, changed: @escaping () -> Void) {
-    self.store = store; self.changed = changed
+  init(store: VoiceHandoffStore, taskSelection: CodexTaskSelection = CodexTaskSelection(), changed: @escaping () -> Void) {
+    self.store = store; self.taskSelection = taskSelection; self.changed = changed
   }
 
   static var permissionGranted: Bool { AXIsProcessTrusted() }
@@ -65,10 +66,7 @@ final class CodexVoiceHandoff {
           guard let self, self.activeID == request.id else { return }
           if let error { self.finish(request, error: "Could not open Codex task: \(error.localizedDescription)"); return }
           guard let app else { self.finish(request, error: "Codex did not open."); return }
-          DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            guard let self, self.activeID == request.id else { return }
-            self.waitForFocus(request, app: app, url: url, deadline: Date().addingTimeInterval(5))
-          }
+          self.waitForFocus(request, app: app, url: url, deadline: Date().addingTimeInterval(5))
         }
       }
       return
@@ -132,15 +130,35 @@ final class CodexVoiceHandoff {
         return
       }
       guard current(request), Self.permissionGranted else { finish(request, error: "Alfred voice control permission is unavailable."); return }
-      guard let launchDate = app.launchDate else {
-        finish(request, error: "Could not safely track the Codex app session. Restart Codex, then ask Alfred again.")
+      if let threadId = request.threadId {
+        taskSelection.confirm(threadId: threadId, app: app, deadline: Date().addingTimeInterval(4), isCurrent: { [weak self] in
+          guard let self else { return false }
+          return self.current(request)
+        }) { [weak self] result in
+          DispatchQueue.main.async {
+            guard let self, self.activeID == request.id else { return }
+            switch result {
+            case .success: self.startVoice(request, app: app, url: url)
+            case .failure(let error): self.finish(request, error: error.localizedDescription)
+            }
+          }
+        }
         return
       }
-      do { try postVoiceShortcut(to: app.processIdentifier) }
-      catch { finish(request, error: error.localizedDescription); return }
-      pendingStart = VoiceHandoffStartReceipt(requestId: request.id, threadId: request.threadId, codexProcessID: Int(app.processIdentifier), codexLaunchDate: launchDate)
-      waitForInput(request, url: url, deadline: Date().addingTimeInterval(8))
+      startVoice(request, app: app, url: url)
     } catch { finish(request, error: "Could not check Codex microphone: \(error.localizedDescription)") }
+  }
+
+  private func startVoice(_ request: VoiceHandoffRequest, app: NSRunningApplication, url: URL) {
+    guard current(request), Self.permissionGranted else { finish(request, error: "Alfred voice control permission is unavailable."); return }
+    guard let launchDate = app.launchDate else {
+      finish(request, error: "Could not safely track the Codex app session. Restart Codex, then ask Alfred again.")
+      return
+    }
+    do { try postVoiceShortcut(to: app.processIdentifier) }
+    catch { finish(request, error: error.localizedDescription); return }
+    pendingStart = VoiceHandoffStartReceipt(requestId: request.id, threadId: request.threadId, codexProcessID: Int(app.processIdentifier), codexLaunchDate: launchDate)
+    waitForInput(request, url: url, deadline: Date().addingTimeInterval(8))
   }
 
   private func waitForInput(_ request: VoiceHandoffRequest, url: URL, deadline: Date) {
