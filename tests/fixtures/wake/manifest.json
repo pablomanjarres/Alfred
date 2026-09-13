@@ -1,0 +1,172 @@
+{
+  "version": 1,
+  "generatedAt": "2026-09-13T05:52:47.442Z",
+  "provenance": "Generated on Pablo Mac with /usr/bin/say from scripts/check-wake.mjs cases; no microphone input.",
+  "archive": "generated-voices.tar.gz",
+  "cases": [
+    {
+      "name": "00.aiff",
+      "voice": "Daniel",
+      "phrase": "Alfred",
+      "expected": true,
+      "format": "aiff-generated-by-say",
+      "sha256": "9d4c5406e6acf2a2d3ded0185525d43e99341689dcb2193d197d13c1888fcb9b",
+      "bytes": 33420
+    },
+    {
+      "name": "01.aiff",
+      "voice": "Daniel",
+      "phrase": "Hey Alfred",
+      "expected": true,
+      "format": "aiff-generated-by-say",
+      "sha256": "369d92ab63107cefca4aaf06bf30878b34b2ccf840f52bb1795639d29a53f059",
+      "bytes": 41698
+    },
+    {
+      "name": "02.aiff",
+      "voice": "Daniel",
+      "phrase": "Alfred can you help",
+      "expected": true,
+      "format": "aiff-generated-by-say",
+      "sha256": "9ab923e623e78f3d885cbc58e5f399c11264728a3feff0d1cf787eeb0f82c6dd",
+      "bytes": 61580
+    },
+    {
+      "name": "03.aiff",
+      "voice": "Daniel",
+      "phrase": "Jarvis",
+      "expected": false,
+      "format": "aiff-generated-by-say",
+      "sha256": "2a26cf9fcab71720c9a36c696e015cf13a9e78abd58946580dc00df573e2703b",
+      "bytes": 35472
+    },
+    {
+      "name": "04.aiff",
+      "voice": "Daniel",
+      "phrase": "Albert",
+      "expected": false,
+      "format": "aiff-generated-by-say",
+      "sha256": "f08256fe073050c5b10b09f1239a196cb2a3e183dda4cf53b069799b8c06f2d9",
+      "bytes": 29324
+    },
+    {
+      "name": "05.aiff",
+      "voice": "Daniel",
+      "phrase": "already",
+      "expected": false,
+      "format": "aiff-generated-by-say",
+      "sha256": "0307c53a9818445885f46907ec2a5ea84af39a9c2ab6e6923ffc3bab546f479c",
+      "bytes": 31370
+    },
+    {
+      "name": "06.aiff",
+      "voice": "Daniel",
+      "phrase": "all right",
+      "expected": false,
+      "format": "aiff-generated-by-say",
+      "sha256": "d79ff091a7ea04e4754116a7f26cfcf5e2ff4e30e744a4628104cc521f4dae43",
+      "bytes": 32394
+    },
+    {
+      "name": "07.aiff",
+      "voice": "Daniel",
+      "phrase": "hello there",
+      "expected": false,
+      "format": "aiff-generated-by-say",
+      "sha256": "c10069e6526c501f2943dd5d57a38b894a64627f7d744a1d43f5d0a70e20cbc0",
+      "bytes": 36698
+    },
+    {
+      "name": "08.aiff",
+      "voice": "Daniel",
+      "phrase": "Alfredo",
+      "expected": false,
+      "format": "aiff-generated-by-say",
+      "sha256": "a63b09ed4a5cd13356301e2afb63409d2b64b513d62133449bc625b46f204c66",
+      "bytes": 38542
+    },
+    {
+      "name": "09.aiff",
+      "voice": "Samantha",
+      "phrase": "Alfred",
+      "expected": true,
+      "format": "aiff-generated-by-say",
+      "sha256": "cf1c7ac43752ac5aa69b2475b458e650c254e09bcd6efbba07d3aa5ffc658864",
+      "bytes": 26476
+    },
+    {
+      "name": "10.aiff",
+      "voice": "Eddy (English (US))",
+      "phrase": "Alfred",
+      "expected": true,
+      "format": "aiff-generated-by-say",
+      "sha256": "37ac9cbd51311849f03ee5d84c81e33321f071ac6c5828279eb080321f80b54f",
+      "bytes": 48488
+    },
+    {
+      "name": "11.aiff",
+      "voice": "Paulina",
+      "phrase": "Hey Alfred",
+      "expected": true,
+      "format": "aiff-generated-by-say",
+      "sha256": "4a6113cfb0f41b404881c32615a4c7a8b1cf2be417a6f4f6741bb75288ecd752",
+      "bytes": 41362
+    },
+    {
+      "name": "12.aiff",
+      "voice": "Paulina",
+      "phrase": "Alfredo",
+      "expected": false,
+      "format": "aiff-generated-by-say",
+      "sha256": "767784235e2867552c717c213c54b5cdb0ab53050cbf2f7624eada382b571c67",
+      "bytes": 32144
+    },
+    {
+      "name": "13.aiff",
+      "voice": "Eddy (English (US))",
+      "phrase": "Alfredo",
+      "expected": false,
+      "format": "aiff-generated-by-say",
+      "sha256": "a63a53a1f27b33b8d9fb47bcdbc1d4b11d739901e9525a32416af2f38dba0167",
+      "bytes": 52012
+    },
+    {
+      "name": "14.aiff",
+      "voice": "Paulina",
+      "phrase": "Alfred",
+      "expected": true,
+      "format": "aiff-generated-by-say",
+      "sha256": "d0865b239c607a84fbbf13e3dc873e9314824137ba17ea4a231534a29bcc1b56",
+      "bytes": 29078
+    },
+    {
+      "name": "15.aiff",
+      "voice": "Samantha",
+      "phrase": "Alfredo",
+      "expected": false,
+      "format": "aiff-generated-by-say",
+      "sha256": "6c0c49a2df22937212ea398b5cdd951566c96e93ba08238565e6d54c163dc547",
+      "bytes": 35180
+    },
+    {
+      "name": "16.aiff",
+      "voice": "Daniel",
+      "phrase": "Alfredo. Alfred",
+      "expected": true,
+      "format": "aiff-generated-by-say",
+      "sha256": "ab7985cb6b41f5b2b3e14683d90151deab6e6a9a1d4f526b7cbf7da56b4c14b6",
+      "bytes": 76430
+    },
+    {
+      "name": "17.aiff",
+      "voice": "Paulina",
+      "phrase": "Alfredo. Alfred",
+      "expected": true,
+      "format": "aiff-generated-by-say",
+      "sha256": "c85773890ca1626ccc15ef3894be0536c908982d26c6c5d68f9a43caa05d8a83",
+      "bytes": 65424
+    }
+  ],
+  "archiveSha256": "292cbf07c809a07bd4649295ab57a706568466fc1bc2a15a2e37e8ea99410ff9",
+  "archiveBytes": 559586
+}

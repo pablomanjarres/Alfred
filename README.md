@@ -44,11 +44,12 @@ npm run install:menubar
 `npm run install:menubar` installs `~/Applications/Alfred.app`, a menu bar UI for standby status, Start/Stop, Open Codex, Launch at Login, and Quit UI. Quit UI leaves the listener alone; Stop Listener turns standby off.
 
 Use Codex desktop's voice button for spoken orders. The optional macOS helper can
-transcribe an existing audio file, and `alfred standby start` runs a login clap
-watcher only: it does not record, transcribe, or send standby audio to Codex.
+transcribe an existing audio file, and `alfred standby start` runs login wake
+standby for double clap or the local “Alfred” keyword: it does not record,
+transcribe, or send standby audio to Codex.
 
 - Local commands use full access by default. Set `--permission read-only` to limit it.
-- Claps work while the computer is awake. Waking from system sleep needs an external sensor.
+- Double clap and “Alfred” work while the computer is awake. Waking from system sleep needs an external sensor.
 - Your orders and answers stay in `~/.alfred/`. Codex plan limits still apply.
 
 [Voice setup](docs/voice.md) · [Desktop setup](docs/codex-desktop.md) · [Configuration](config.example.json)

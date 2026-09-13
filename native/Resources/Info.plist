@@ -13,8 +13,8 @@
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
   <key>NSMicrophoneUsageDescription</key>
-  <string>Alfred listens only when you ask, so it can transcribe one spoken command locally.</string>
+  <string>While standby is on, Alfred uses the microphone to detect double claps and the word Alfred locally. Wake audio is discarded after processing and is never saved or sent.</string>
   <key>NSSpeechRecognitionUsageDescription</key>
-  <string>Alfred uses Apple on-device speech recognition to turn one spoken command into text.</string>
+  <string>Alfred uses Apple on-device speech recognition to transcribe an audio file you choose.</string>
 </dict>
 </plist>

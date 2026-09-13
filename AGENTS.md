@@ -19,10 +19,10 @@ until its result is checked.
 - Use existing project rules when working in another repository. Full machine
   access does not expand the requested task.
 - Keep adapters small. Audio capture must stop before execution or spoken output.
-- Clap standby is clap detection only: no recordings, no audio files, no retained raw buffers beyond one second, wipe tap PCM buffers after scalar feature extraction, and never forward standby audio to Speech, Codex, or another recognizer.
+- Standby is wake-trigger detection only: deliberate double clap or the local Alfred keyword, no recordings, no audio files, no retained raw buffers beyond one second, wipe tap PCM buffers after local feature extraction, and never forward standby audio to Speech, Codex, or full transcription.
 - Run local processes with argument arrays, bounded timeouts, and cancellation.
 - Local history belongs in the user's private Alfred state directory, never Git.
-- A sleeping CPU cannot listen for claps. Keep display wake and system wake distinct.
+- A sleeping CPU cannot listen for clap or keyword triggers. Keep display wake and system wake distinct.
 - Explicit path slices and small commits. Never force-push, push to main, or merge.
 
 ## Check before shipping

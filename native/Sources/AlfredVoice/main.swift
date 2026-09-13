@@ -5,6 +5,7 @@ struct Options {
   var command = "listen"
   var locale = Locale.current.identifier
   var file: String?
+  var cue = false
 }
 func emit(_ type: String, _ fields: [String: Any] = [:]) {
   var object = fields
@@ -45,6 +46,9 @@ func parseOptions() -> Options {
       index += 1
       guard index < args.count else { fail("--file needs a value") }
       options.file = args[index]
+    case "--cue":
+      guard options.command == "wake-watch" else { fail("--cue requires wake-watch") }
+      options.cue = true
     default:
       fail("unknown argument \(args[index])")
     }
@@ -117,7 +121,7 @@ final class ClapDetector {
   func push(rms: Float, peak: Float, time: Double) -> Bool {
     if rms < 0.05 { startedHigh = nil; return false }
     if startedHigh == nil { startedHigh = time }
-    guard peak > 0.55, rms > 0.18, time - (startedHigh ?? time) < 0.16 else { return false }
+    guard peak > 0.55, rms > 0.10, time - (startedHigh ?? time) < 0.16 else { return false }
     guard time - lastClap > 0.18 else { return false }
     defer { lastClap = time; sawFirst = true }
     return sawFirst && time - lastClap < 0.9
@@ -131,12 +135,35 @@ func detectorSelftest() -> Bool {
     clap.push(rms: 0.02, peak: 0.05, time: 0.30),
     clap.push(rms: 0.31, peak: 0.90, time: 0.58)
   ].contains(true)
+
+  let moderate = ClapDetector()
+  let moderateHit = [
+    moderate.push(rms: 0.01, peak: 0.03, time: 0.00),
+    moderate.push(rms: 0.12, peak: 0.82, time: 0.10),
+    moderate.push(rms: 0.02, peak: 0.04, time: 0.20),
+    moderate.push(rms: 0.13, peak: 0.86, time: 0.50)
+  ].contains(true)
+
+  let single = ClapDetector()
+  let singleRejected = ![
+    single.push(rms: 0.01, peak: 0.03, time: 0.00),
+    single.push(rms: 0.12, peak: 0.82, time: 0.10),
+    single.push(rms: 0.02, peak: 0.04, time: 0.20)
+  ].contains(true)
+
   let speech = ClapDetector()
-  var rejected = true
+  var speechRejected = true
   for i in 0..<12 {
-    rejected = rejected && !speech.push(rms: 0.24, peak: 0.64, time: Double(i) * 0.07)
+    speechRejected = speechRejected && !speech.push(rms: 0.24, peak: 0.64, time: Double(i) * 0.07)
   }
-  return hit && rejected
+
+  let sustained = ClapDetector()
+  var sustainedRejected = true
+  for i in 0..<8 {
+    sustainedRejected = sustainedRejected && !sustained.push(rms: 0.12, peak: 0.64, time: Double(i) * 0.10)
+  }
+
+  return hit && moderateHit && singleRejected && speechRejected && sustainedRejected
 }
 func selftest() {
   let callbackRan = Locked(false)
@@ -315,6 +342,26 @@ case "clap-authorize": authorizeClap()
 case "clap-doctor": clapDoctor()
 case "selftest": selftest()
 case "clap-selftest": clapPrivacySelftest()
+case "wake-audio-selftest": wakeAudioSelftest()
+case "wake-cue":
+  do { try playWakeCue() } catch { fail(String(describing: error)) }
+case "wake-watch", "wake-file":
+  do {
+    guard let resources = Bundle.main.resourceURL else {
+      throw WakeAudioError(description: "Alfred wake resources are missing")
+    }
+    let keyword = try AlfredKeywordSpotter(resourcesDirectory: resources)
+    if options.command == "wake-watch" {
+      _ = try waitForWake(using: keyword, cueBeforeListening: options.cue)
+    }
+    else {
+      guard let file = options.file else {
+        keyword.close()
+        throw WakeAudioError(description: "wake-file requires --file")
+      }
+      try testWakeFile(file, using: keyword)
+    }
+  } catch { fail(String(describing: error)) }
 case "clap-watch": _ = waitForClap()
 case "file":
   guard let file = options.file else { fail("file mode requires --file") }

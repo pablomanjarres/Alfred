@@ -8,8 +8,9 @@ import { stateDirectory } from './config.js';
 
 export const LABEL = 'com.pablo.alfred.standby';
 const LOG_LIMIT = 128 * 1024;
+const WAKE_WATCH_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 
-type Event = { type: 'ready' | 'listening' | 'idle' | 'clap' | 'error'; status?: string; detail?: string; message?: string };
+type Event = { type: 'ready' | 'listening' | 'idle' | 'clap' | 'wake' | 'paused' | 'cue' | 'error'; status?: string; detail?: unknown; message?: string };
 export type Launchctl = (command: string, args: string[]) => Promise<{ code: number; stdout: string; stderr: string }>;
 type Runner = typeof runProcess;
 export type StandbyPaths = ReturnType<typeof servicePaths>;
@@ -87,18 +88,35 @@ export async function runStandby(paths = servicePaths(), options: StandbyRunOpti
   const stop = () => controller.abort();
   process.once('SIGTERM', stop); process.once('SIGINT', stop);
   options.signal?.addEventListener('abort', stop, { once: true });
+  if (options.signal?.aborted) stop();
   try {
+    if (controller.signal.aborted) { await writeState(paths, 'stopped', 'Standby stopped.'); return 0; }
     let ready = await clapStatus(paths, helper, runner);
     if (!ready.ok && ready.detail.includes('notDetermined')) ready = await clapAuthorize(paths, helper, runner, controller.signal);
     if (!ready.ok) { await alert(paths, `Alfred standby blocked: ${ready.detail}`); return 0; }
-    await writeState(paths, 'running', 'Waiting for deliberate double clap. Speech recognition is not used by standby.');
     let cycles = 0;
+    let scheduleCueNext = false;
     while (!controller.signal.aborted && (options.maxCycles === undefined || cycles < options.maxCycles)) {
       cycles += 1;
       try {
-        const heard = await runClapWatch(paths, helper, runner, controller.signal);
-        if (heard) { await (options.cue ?? playCue)(); await writeState(paths, 'running', 'Double clap heard; re-arming clap standby.'); }
-        else await writeState(paths, 'running', 'No double clap heard; re-arming clap standby.');
+        await writeState(paths, 'starting', 'Preparing local clap and Alfred wake detection.');
+        const trigger = await runWakeWatchWithRetry(paths, helper, runner, controller.signal, options.cue ? false : scheduleCueNext);
+        scheduleCueNext = false;
+        if (trigger) {
+          await writeState(paths, 'starting', `${trigger} heard; microphone stopped for the cue.`);
+          if (options.cue) {
+            try {
+              await options.cue();
+              await logEvent(paths, { type: 'cue', status: 'played', detail: 'custom cue completed' });
+            } catch (error) {
+              const detail = error instanceof Error ? error.message : String(error);
+              await logEvent(paths, { type: 'cue', status: 'failed', detail });
+              throw new Error(`cue failed: ${detail}`);
+            }
+          } else {
+            scheduleCueNext = true;
+          }
+        }
       } catch (error) {
         if (controller.signal.aborted) break;
         const detail = error instanceof Error ? error.message : String(error);
@@ -121,7 +139,7 @@ async function clapAuthorize(paths: StandbyPaths, helper: string | undefined = u
     const result = await runner(resolvedHelper, ['clap-authorize'], { timeoutMs: 75_000, signal });
     await appendLog(paths, result.stdout + result.stderr);
     const event = parseEvents(result.stdout).find((item) => item.type === 'ready' || item.type === 'error');
-    const detail = event?.message || event?.detail || result.stderr || 'microphone authorized for clap standby';
+    const detail = detailText(event?.message ?? event?.detail ?? result.stderr ?? 'microphone authorized for clap standby');
     if (result.code === 0 && event?.type !== 'error') return { ok: true, detail };
     await writeBlockedState(paths, detail);
     return { ok: false, detail };
@@ -138,7 +156,7 @@ async function clapStatus(paths: StandbyPaths, helper: string | undefined = unde
     const result = await runner(resolvedHelper, ['clap-doctor'], { timeoutMs: 10_000 });
     await appendLog(paths, result.stdout + result.stderr);
     const event = parseEvents(result.stdout).find((item) => item.type === 'ready' || item.type === 'error');
-    const detail = event?.message || event?.detail || result.stderr || 'clap detector ready';
+    const detail = detailText(event?.message ?? event?.detail ?? result.stderr ?? 'clap detector ready');
     if (result.code === 0 && event?.type !== 'error') return { ok: true, detail };
     await writeBlockedState(paths, detail);
     return { ok: false, detail };
@@ -149,14 +167,47 @@ async function clapStatus(paths: StandbyPaths, helper: string | undefined = unde
   }
 }
 
-async function runClapWatch(paths: StandbyPaths, helper: string, runner: Runner, signal?: AbortSignal): Promise<boolean> {
-  const result = await runner(helper, ['clap-watch'], { timeoutMs: 130_000, signal });
-  await appendLog(paths, result.stdout + result.stderr);
+async function runWakeWatchWithRetry(paths: StandbyPaths, helper: string, runner: Runner, signal?: AbortSignal, playCue = false): Promise<string | undefined> {
+  try {
+    return await runWakeWatch(paths, helper, runner, signal, playCue);
+  } catch (error) {
+    if (!sleepTimeout(error)) throw error;
+    await writeState(paths, 'starting', 'Wake watch timed out after 24 hours; retrying once.');
+    return runWakeWatch(paths, helper, runner, signal, playCue);
+  }
+}
+
+async function runWakeWatch(paths: StandbyPaths, helper: string, runner: Runner, signal?: AbortSignal, playCue = false): Promise<string | undefined> {
+  let updates = Promise.resolve();
+  let updateError: unknown;
+  const handled = new Set<string>();
+  let result: Awaited<ReturnType<Runner>>;
+  try {
+    result = await runner(helper, ['wake-watch', ...(playCue ? ['--cue'] : [])], {
+      timeoutMs: WAKE_WATCH_TIMEOUT_MS, signal,
+      onLine: (line) => {
+        const trimmed = line.trim();
+        const event = parseEvents(line)[0];
+        if (!event) return;
+        handled.add(trimmed);
+        updates = updates.then(() => logHelperEvent(paths, event)).catch((error) => { updateError = error; });
+      },
+    });
+  } finally { await updates; }
+  if (updateError) throw updateError;
   const events = parseEvents(result.stdout);
+  for (const line of result.stdout.split('\n')) {
+    const trimmed = line.trim();
+    const event = parseEvents(line)[0];
+    if (event && !handled.has(trimmed)) await logHelperEvent(paths, event);
+  }
   const error = events.find((item) => item.type === 'error');
-  if (error) throw new Error(error.message || error.detail || 'clap watch failed');
-  if (result.code !== 0) throw new Error(result.stderr || `clap watch exited with code ${result.code}`);
-  return events.some((item) => item.type === 'clap');
+  if (error) throw new Error(detailText(error.message ?? error.detail ?? 'wake watch failed'));
+  if (result.code !== 0) throw new Error(result.stderr || `wake watch exited with code ${result.code}`);
+  const unhandled = result.stdout.split('\n').filter((line) => line.trim() && !parseEvents(line)[0]).join('\n');
+  await appendLog(paths, (unhandled ? `${unhandled}\n` : '') + result.stderr);
+  const wake = events.find((item) => item.type === 'wake');
+  return wake ? wake.status || 'wake' : undefined;
 }
 
 async function helperPath(): Promise<string> {
@@ -174,6 +225,17 @@ async function appendLog(paths: StandbyPaths, chunk: string): Promise<void> {
   await appendFile(paths.log, chunk, { mode: 0o600 });
   if ((await stat(paths.log)).size > LOG_LIMIT) await writeFile(paths.log, (await readFile(paths.log, 'utf8')).slice(-LOG_LIMIT), { mode: 0o600 });
 }
+async function logEvent(paths: StandbyPaths, event: { type: string; status?: string; detail?: string }): Promise<void> {
+  await appendLog(paths, JSON.stringify({ ...event, at: new Date().toISOString() }) + '\n');
+}
+async function logHelperEvent(paths: StandbyPaths, event: Event): Promise<void> {
+  const detail = detailText(event.detail ?? event.message);
+  if (event.type === 'ready') await writeState(paths, 'running', detail);
+  else if (event.type === 'paused') await writeState(paths, 'paused', detail);
+  if (event.type === 'ready' || event.type === 'paused' || event.type === 'cue' || event.type === 'wake' || event.type === 'idle' || event.type === 'error') {
+    await logEvent(paths, { type: event.type, status: event.status ?? event.type, detail });
+  }
+}
 async function alert(paths: StandbyPaths, message: string): Promise<void> {
   const state = await readState(paths);
   const last = state?.lastAlertAt ? Date.parse(state.lastAlertAt) : 0;
@@ -181,7 +243,8 @@ async function alert(paths: StandbyPaths, message: string): Promise<void> {
   await runProcess('/usr/bin/osascript', ['-e', `display notification ${JSON.stringify(message)} with title "Alfred"`], { timeoutMs: 10_000 }).catch(() => ({ code: 1, stdout: '', stderr: '' }));
   if (state) await writeFile(paths.state, JSON.stringify({ ...state, lastAlertAt: new Date().toISOString() }) + '\n', { mode: 0o600 });
 }
-async function playCue(): Promise<void> { await runProcess('/usr/bin/afplay', ['/System/Library/Sounds/Ping.aiff'], { timeoutMs: 3_000 }).catch(() => ({ code: 1, stdout: '', stderr: '' })); }
+function detailText(value: unknown): string { return typeof value === 'string' ? value : value === undefined ? '' : JSON.stringify(value); }
+function sleepTimeout(error: unknown): boolean { return error instanceof Error && /timed out after 86400000 ms|timeout/i.test(error.message); }
 function parseEvents(output: string): Event[] { return output.split('\n').flatMap((line) => { try { return line.trim() ? [JSON.parse(line) as Event] : []; } catch { return []; } }); }
 function domain(): string { return `gui/${process.getuid?.() ?? 0}`; }
 function serviceTarget(): string { return `${domain()}/${LABEL}`; }

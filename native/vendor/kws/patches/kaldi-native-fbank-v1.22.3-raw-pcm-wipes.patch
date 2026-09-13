@@ -1,0 +1,104 @@
+--- a/kaldi-native-fbank/csrc/online-feature.h
++++ b/kaldi-native-fbank/csrc/online-feature.h
+@@ -77,6 +77,7 @@
+  public:
+   // Constructor from options class
+   explicit OnlineGenericBaseFeature(const typename C::Options &opts);
++  ~OnlineGenericBaseFeature();
+
+   int32_t Dim() const { return computer_.Dim(); }
+
+--- a/kaldi-native-fbank/csrc/online-feature.cc
++++ b/kaldi-native-fbank/csrc/online-feature.cc
+@@ -1,3 +1,5 @@
++#define __STDC_WANT_LIB_EXT1__ 1
++
+ /**
+  * Copyright (c)  2022  Xiaomi Corporation (authors: Fangjun Kuang)
+  *
+@@ -23,6 +25,7 @@
+
+ #include <algorithm>
+ #include <cstddef>
++#include <string.h>
+ #include <utility>
+ #include <vector>
+
+@@ -31,6 +34,25 @@
+
+ namespace knf {
+
++namespace {
++
++void AlfredWipeFloatData(float *data, size_t count) {
++  if (data == nullptr || count == 0) return;
++#if defined(__APPLE__)
++  (void)memset_s(data, count * sizeof(float), 0, count * sizeof(float));
++#else
++  volatile float *p = data;
++  for (size_t i = 0; i != count; ++i) p[i] = 0.0f;
++#endif
++}
++
++void AlfredWipeFloatVector(std::vector<float> *v) {
++  if (v == nullptr || v->empty()) return;
++  AlfredWipeFloatData(v->data(), v->size());
++}
++
++}  // namespace
++
+ RecyclingVector::RecyclingVector(int32_t items_to_hold)
+     : items_to_hold_(items_to_hold == 0 ? -1 : items_to_hold),
+       first_available_index_(0) {}
+@@ -74,10 +96,18 @@
+     const typename C::Options &opts)
+     : computer_(opts),
+       window_function_(computer_.GetFrameOptions()),
++      features_(256),
+       input_finished_(false),
+-      waveform_offset_(0) {}
++      waveform_offset_(0) {
++  waveform_remainder_.reserve(4096);
++}
+
+ template <class C>
++OnlineGenericBaseFeature<C>::~OnlineGenericBaseFeature() {
++  AlfredWipeFloatVector(&waveform_remainder_);
++}
++
++template <class C>
+ void OnlineGenericBaseFeature<C>::AcceptWaveform(float sampling_rate,
+                                                  const float *waveform,
+                                                  int32_t n) {
+@@ -131,6 +161,7 @@
+     std::vector<float> this_feature(computer_.Dim());
+
+     computer_.Compute(raw_log_energy, vtln_warp, &window, this_feature.data());
++    AlfredWipeFloatVector(&window);
+     features_.PushBack(std::move(this_feature));
+   }
+
+@@ -149,15 +180,18 @@
+     if (new_num_samples <= 0) {
+       // odd, but we'll try to handle it.
+       waveform_offset_ += waveform_remainder_.size();
+-      waveform_remainder_.resize(0);
++      AlfredWipeFloatVector(&waveform_remainder_);
++      waveform_remainder_.clear();
+     } else {
+-      std::vector<float> new_remainder(new_num_samples);
+-
++      int32_t old_num_samples =
++          static_cast<int32_t>(waveform_remainder_.size());
+       std::copy(waveform_remainder_.begin() + samples_to_discard,
+-                waveform_remainder_.end(), new_remainder.begin());
++                waveform_remainder_.end(), waveform_remainder_.begin());
+       waveform_offset_ += samples_to_discard;
+
+-      waveform_remainder_.swap(new_remainder);
++      AlfredWipeFloatData(waveform_remainder_.data() + new_num_samples,
++                           old_num_samples - new_num_samples);
++      waveform_remainder_.resize(new_num_samples);
+     }
+   }
+ }

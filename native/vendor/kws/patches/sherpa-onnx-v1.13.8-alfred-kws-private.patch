@@ -1,0 +1,163 @@
+--- a/cmake/kaldi-native-fbank.cmake
++++ b/cmake/kaldi-native-fbank.cmake
+@@ -1,4 +1,19 @@
+ function(download_kaldi_native_fbank)
++  if(DEFINED ALFRED_KALDI_NATIVE_FBANK_SOURCE_DIR)
++    message(STATUS "Using patched kaldi-native-fbank from ${ALFRED_KALDI_NATIVE_FBANK_SOURCE_DIR}")
++    set(KALDI_NATIVE_FBANK_BUILD_TESTS OFF CACHE BOOL "" FORCE)
++    set(KALDI_NATIVE_FBANK_BUILD_PYTHON OFF CACHE BOOL "" FORCE)
++    set(KALDI_NATIVE_FBANK_ENABLE_CHECK OFF CACHE BOOL "" FORCE)
++    add_subdirectory(${ALFRED_KALDI_NATIVE_FBANK_SOURCE_DIR} ${CMAKE_BINARY_DIR}/kaldi-native-fbank-patched EXCLUDE_FROM_ALL)
++    if(TARGET kissfft AND (CMAKE_C_COMPILER_ID MATCHES "Clang"))
++      target_compile_options(kissfft PRIVATE -Wno-cast-align)
++    endif()
++    target_include_directories(kaldi-native-fbank-core
++      PUBLIC
++        ${ALFRED_KALDI_NATIVE_FBANK_SOURCE_DIR}/
++    )
++    return()
++  endif()
+   include(FetchContent)
+
+   set(kaldi_native_fbank_URL   "https://github.com/csukuangfj/kaldi-native-fbank/archive/refs/tags/v1.22.3.tar.gz")
+--- a/sherpa-onnx/csrc/features.cc
++++ b/sherpa-onnx/csrc/features.cc
+@@ -1,3 +1,5 @@
++#define __STDC_WANT_LIB_EXT1__ 1
++
+ // sherpa-onnx/csrc/features.cc
+ //
+ // Copyright (c)  2023  Xiaomi Corporation
+@@ -7,6 +9,7 @@
+ #include <algorithm>
+ #include <memory>
+ #include <mutex>
++#include <string.h>
+ #include <sstream>
+ #include <string>
+ #include <vector>
+@@ -16,7 +19,26 @@
+ #include "sherpa-onnx/csrc/resample.h"
+
+ namespace sherpa_onnx {
++
++namespace {
++
++void AlfredWipeFloatData(float *data, size_t count) {
++  if (data == nullptr || count == 0) return;
++#if defined(__APPLE__)
++  (void)memset_s(data, count * sizeof(float), 0, count * sizeof(float));
++#else
++  volatile float *p = data;
++  for (size_t i = 0; i != count; ++i) p[i] = 0.0f;
++#endif
++}
+
++void AlfredWipeFloatVector(std::vector<float> *v) {
++  if (v == nullptr || v->empty()) return;
++  AlfredWipeFloatData(v->data(), v->size());
++}
++
++}  // namespace
++
+ void FeatureExtractorConfig::Register(ParseOptions *po) {
+   po->Register("sample-rate", &sampling_rate,
+                "Sampling rate of the input waveform. "
+@@ -79,6 +101,7 @@
+         buf[i] = waveform[i] * 32768;
+       }
+       AcceptWaveformImpl(sampling_rate, buf.data(), n);
++      AlfredWipeFloatVector(&buf);
+     }
+   }
+
+@@ -100,6 +123,7 @@
+
+       AcceptWaveformWrapper(config_.sampling_rate, samples.data(),
+                             samples.size());
++      AlfredWipeFloatVector(&samples);
+       return;
+     }
+
+--- a/sherpa-onnx/csrc/resample.h
++++ b/sherpa-onnx/csrc/resample.h
+@@ -44,6 +44,7 @@
+   /// We suggest around 4 to 10 for normal use.
+   LinearResample(int32_t samp_rate_in_hz, int32_t samp_rate_out_hz,
+                  float filter_cutoff_hz, int32_t num_zeros);
++  ~LinearResample();
+
+   /// Calling the function Reset() resets the state of the object prior to
+   /// processing a new signal; it is only necessary if you have called
+--- a/sherpa-onnx/csrc/resample.cc
++++ b/sherpa-onnx/csrc/resample.cc
+@@ -1,3 +1,5 @@
++#define __STDC_WANT_LIB_EXT1__ 1
++
+ /**
+  * Copyright     2013  Pegah Ghahremani
+  *               2014  IMSL, PKU-HKUST (author: Wei Shi)
+@@ -42,7 +44,26 @@
+ #endif
+
+ namespace sherpa_onnx {
++
++namespace {
++
++void AlfredWipeFloatData(float *data, size_t count) {
++  if (data == nullptr || count == 0) return;
++#if defined(__APPLE__)
++  (void)memset_s(data, count * sizeof(float), 0, count * sizeof(float));
++#else
++  volatile float *p = data;
++  for (size_t i = 0; i != count; ++i) p[i] = 0.0f;
++#endif
++}
++
++void AlfredWipeFloatVector(std::vector<float> *v) {
++  if (v == nullptr || v->empty()) return;
++  AlfredWipeFloatData(v->data(), v->size());
++}
+
++}  // namespace
++
+ template <class I>
+ static I Gcd(I m, I n) {
+   // this function is copied from kaldi/src/base/kaldi-math.h
+@@ -102,6 +123,10 @@
+
+   SetIndexesAndWeights();
+   Reset();
++}
++
++LinearResample::~LinearResample() {
++  AlfredWipeFloatVector(&input_remainder_);
+ }
+
+ void LinearResample::SetIndexesAndWeights() {
+@@ -158,7 +183,8 @@
+ void LinearResample::Reset() {
+   input_sample_offset_ = 0;
+   output_sample_offset_ = 0;
+-  input_remainder_.resize(0);
++  AlfredWipeFloatVector(&input_remainder_);
++  input_remainder_.clear();
+ }
+
+ void LinearResample::Resample(const float *input, int32_t input_dim, bool flush,
+@@ -283,6 +309,7 @@
+
+ void LinearResample::SetRemainder(const float *input, int32_t input_dim) {
+   std::vector<float> old_remainder(input_remainder_);
++  AlfredWipeFloatVector(&input_remainder_);
+   // max_remainder_needed is the width of the filter from side to side,
+   // measured in input samples.  you might think it should be half that,
+   // but you have to consider that you might be wanting to output samples
+@@ -306,6 +333,7 @@
+       // else leave it at zero.
+     }
+   }
++  AlfredWipeFloatVector(&old_remainder);
+ }
+
+ }  // namespace sherpa_onnx
