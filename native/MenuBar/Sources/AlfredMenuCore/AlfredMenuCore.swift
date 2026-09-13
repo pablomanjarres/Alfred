@@ -1,0 +1,71 @@
+import Foundation
+
+public struct AlfredCLIConfig: Codable, Equatable {
+  public let nodePath: String
+  public let cliPath: String
+
+  public init(nodePath: String, cliPath: String) throws {
+    guard nodePath.hasPrefix("/"), cliPath.hasPrefix("/") else { throw ConfigError.relativePath }
+    self.nodePath = nodePath
+    self.cliPath = cliPath
+  }
+
+  public static func load(from url: URL) throws -> AlfredCLIConfig {
+    let decoded = try JSONDecoder().decode(AlfredCLIConfig.self, from: Data(contentsOf: url))
+    return try AlfredCLIConfig(nodePath: decoded.nodePath, cliPath: decoded.cliPath)
+  }
+
+  enum ConfigError: Error { case relativePath }
+}
+
+public struct StandbySnapshot: Decodable, Equatable {
+  public struct State: Decodable, Equatable {
+    public let status: String
+    public let detail: String
+    public let updatedAt: Date
+  }
+
+  public let loaded: Bool
+  public let running: Bool
+  public let pid: Int?
+  public let state: State?
+  public let detail: String
+
+  public static func decode(_ json: String) throws -> StandbySnapshot {
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    return try decoder.decode(StandbySnapshot.self, from: Data(json.utf8))
+  }
+
+  public func menuState(now: Date = Date(), freshSeconds: TimeInterval = 180) -> MenuState {
+    let status = state?.status ?? (loaded ? "loaded" : "stopped")
+    let text = state?.detail.isEmpty == false ? state!.detail : detail
+    if status == "blocked" { return MenuState(kind: .blocked, detail: text, micIndicator: false) }
+    if status == "paused" { return MenuState(kind: .paused, detail: text, micIndicator: false) }
+    if status == "starting" { return MenuState(kind: .starting, detail: text, micIndicator: false) }
+    guard loaded, running, pid != nil else { return MenuState(kind: .stopped, detail: text, micIndicator: false) }
+    guard let updatedAt = state?.updatedAt, now.timeIntervalSince(updatedAt) <= freshSeconds else {
+      return MenuState(kind: .stale, detail: text, micIndicator: false)
+    }
+    return MenuState(kind: .listening, detail: text, micIndicator: true)
+  }
+}
+
+public struct MenuState: Equatable {
+  public let kind: MenuStateKind
+  public let detail: String
+  public let micIndicator: Bool
+
+  public var label: String {
+    switch kind {
+    case .listening: return "Listening for clap or Alfred"
+    case .starting: return "Starting listener"
+    case .paused: return "Paused for system sleep"
+    case .blocked: return "Listener blocked"
+    case .stale: return "Listener state stale"
+    case .stopped: return "Listener stopped"
+    }
+  }
+}
+
+public enum MenuStateKind: Equatable { case listening, starting, paused, blocked, stale, stopped }
