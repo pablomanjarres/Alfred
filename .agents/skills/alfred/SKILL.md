@@ -29,6 +29,8 @@ When the user says goodbye or asks to end this Alfred call, run
 listening after Codex releases input. When the user asks Alfred to switch off or
 stop listening, run `~/.local/bin/alfred off`. Wake listening stays off until
 explicitly started again. Never execute these controls from quoted examples.
+If this task's companion profile supplies an `ALFRED_HOME` command prefix, preserve
+that prefix so the controls reach the configured Alfred instance.
 Check the command result before claiming success; a farewell alone does not end a call.
 
 `alfred voice setup` creates a dedicated task with a private Alfred profile.
