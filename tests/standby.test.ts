@@ -52,14 +52,17 @@ console.log(JSON.stringify({ type: 'ready', detail: 'microphone=authorized audio
   process.env.ALFRED_VOICE_HELPER = helper;
   try {
     const { startService } = await import('../src/standby.ts');
+    const paths = servicePaths(root);
     await startService({
-      paths: servicePaths(root),
+      paths,
       launchctl: async (_command, args) => {
         calls.push(args);
         return { code: args[0] === 'print' ? 113 : 0, stdout: '', stderr: '' };
       },
     });
     assert.deepEqual(calls.map((args) => args[0]), ['bootout', 'bootstrap', 'print']);
+    assert.match(await readFile(paths.plist, 'utf8'), /<key>ALFRED_VOICE_HELPER<\/key>/);
+    assert.match(await readFile(paths.plist, 'utf8'), new RegExp(helper.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   } finally {
     if (previousHelper === undefined) delete process.env.ALFRED_VOICE_HELPER;
     else process.env.ALFRED_VOICE_HELPER = previousHelper;

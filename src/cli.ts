@@ -14,7 +14,6 @@ const HELP = `Alfred, at your service.
   alfred desktop                     Open this workspace in Codex desktop
   alfred ask "your order"             Run an order through your Codex account
   alfred transcribe /path/message.m4a Execute a saved voice message
-  alfred standby start               Start login clap-only standby
   alfred history                     Show the ten latest local receipts
   alfred standby start|stop|status    Manage login clap-only standby
   alfred doctor                      Check account, tools, voice, and pet
