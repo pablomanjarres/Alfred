@@ -6,10 +6,18 @@ final class AlfredKeywordSpotter: WakeKeywordSpotting {
   static let modelDirectoryName = "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01"
   static let keywordFileName = "alfred-keywords.txt"
 
+  private static let quietSamplesBeforeRefresh = 3_200
+  private static let priorStreamTailSamples = 8_000
+  private static let soundRMSFloor: Float = 0.01
+
   private let lock = NSLock()
   private let cstrings = CStringArena()
   private var spotter: OpaquePointer?
   private var stream: OpaquePointer?
+  private var priorStream: OpaquePointer?
+  private var priorRemainingSamples = 0
+  private var quietSamples = 0
+  private var hasSound = false
   private var isClosed = false
 
   convenience init(resourcesDirectory: URL) throws {
@@ -40,19 +48,13 @@ final class AlfredKeywordSpotter: WakeKeywordSpotting {
     guard let createdSpotter = SherpaOnnxCreateKeywordSpotter(&config) else {
       throw WakeAudioError(description: "could not create Alfred keyword spotter")
     }
-    guard let createdStream = SherpaOnnxCreateKeywordStream(createdSpotter) else {
-      SherpaOnnxDestroyKeywordSpotter(createdSpotter)
-      throw WakeAudioError(description: "could not create Alfred keyword stream")
-    }
     do {
-      try Self.prime(createdSpotter, stream: createdStream)
+      stream = try Self.createPrimedStream(spotter: createdSpotter)
+      spotter = createdSpotter
     } catch {
-      AlfredKwsFinishAndDestroyStream(createdStream)
       SherpaOnnxDestroyKeywordSpotter(createdSpotter)
       throw error
     }
-    spotter = createdSpotter
-    stream = createdStream
   }
 
   func accept(_ samples: UnsafeBufferPointer<Float>) throws {
@@ -62,12 +64,33 @@ final class AlfredKeywordSpotter: WakeKeywordSpotting {
     guard !samples.isEmpty, samples.count <= Int(ALFRED_KWS_MAX_CHUNK_SAMPLES), let baseAddress = samples.baseAddress else {
       throw WakeAudioError(description: "Alfred keyword chunk must be 1...1600 samples at 16 kHz")
     }
-    for sample in samples where !sample.isFinite {
-      throw WakeAudioError(description: "Alfred keyword chunk contains an invalid sample")
+
+    var sumSquares: Float = 0
+    for sample in samples {
+      guard sample.isFinite else {
+        closeLocked()
+        throw WakeAudioError(description: "Alfred keyword chunk contains an invalid sample")
+      }
+      sumSquares += sample * sample
     }
-    let status = AlfredKwsAccept16k100ms(stream, baseAddress, Int32(samples.count))
-    guard status == ALFRED_KWS_OK else {
-      throw WakeAudioError(description: "Alfred keyword accept failed: \(Self.statusName(status))")
+
+    do {
+      try Self.accept(samples: baseAddress, count: samples.count, into: stream)
+      if let priorStream {
+        try Self.accept(samples: baseAddress, count: samples.count, into: priorStream)
+        priorRemainingSamples -= samples.count
+      }
+    } catch {
+      closeLocked()
+      throw error
+    }
+
+    let rms = (sumSquares / Float(samples.count)).squareRoot()
+    if rms >= Self.soundRMSFloor {
+      hasSound = true
+      quietSamples = 0
+    } else if hasSound {
+      quietSamples += samples.count
     }
   }
 
@@ -75,6 +98,88 @@ final class AlfredKeywordSpotter: WakeKeywordSpotting {
     lock.lock()
     defer { lock.unlock() }
     guard !isClosed, let spotter, let stream else { throw WakeAudioError(description: "Alfred keyword spotter is closed") }
+
+    let currentHit = Self.decode(stream: stream, spotter: spotter)
+    let priorHit = priorStream.map { Self.decode(stream: $0, spotter: spotter) } ?? false
+    if currentHit || priorHit { return true }
+
+    if let priorStream, priorRemainingSamples <= 0 {
+      AlfredKwsFinishAndDestroyStream(priorStream)
+      self.priorStream = nil
+      priorRemainingSamples = 0
+    }
+
+    if hasSound && quietSamples >= Self.quietSamplesBeforeRefresh {
+      try rotateAfterPause(spotter: spotter, currentStream: stream)
+    }
+    return false
+  }
+
+  func close() {
+    lock.lock()
+    defer { lock.unlock() }
+    closeLocked()
+  }
+
+  deinit {
+    close()
+  }
+
+  private func rotateAfterPause(spotter: OpaquePointer, currentStream: OpaquePointer) throws {
+    if let priorStream {
+      AlfredKwsFinishAndDestroyStream(priorStream)
+      self.priorStream = nil
+      priorRemainingSamples = 0
+    }
+
+    do {
+      let refreshedStream = try Self.createPrimedStream(spotter: spotter)
+      priorStream = currentStream
+      priorRemainingSamples = Self.priorStreamTailSamples
+      stream = refreshedStream
+      hasSound = false
+      quietSamples = 0
+    } catch {
+      closeLocked()
+      throw error
+    }
+  }
+
+  private func closeLocked() {
+    guard !isClosed else { return }
+    isClosed = true
+    if let priorStream { AlfredKwsFinishAndDestroyStream(priorStream) }
+    if let stream { AlfredKwsFinishAndDestroyStream(stream) }
+    if let spotter { SherpaOnnxDestroyKeywordSpotter(spotter) }
+    priorStream = nil
+    stream = nil
+    spotter = nil
+    priorRemainingSamples = 0
+    quietSamples = 0
+    hasSound = false
+  }
+
+  private static func createPrimedStream(spotter: OpaquePointer) throws -> OpaquePointer {
+    guard let stream = SherpaOnnxCreateKeywordStream(spotter) else {
+      throw WakeAudioError(description: "could not create Alfred keyword stream")
+    }
+    do {
+      try prime(spotter, stream: stream)
+      return stream
+    } catch {
+      AlfredKwsFinishAndDestroyStream(stream)
+      throw error
+    }
+  }
+
+  private static func accept(samples: UnsafePointer<Float>, count: Int, into stream: OpaquePointer) throws {
+    let status = AlfredKwsAccept16k100ms(stream, samples, Int32(count))
+    guard status == ALFRED_KWS_OK else {
+      throw WakeAudioError(description: "Alfred keyword accept failed: \(Self.statusName(status))")
+    }
+  }
+
+  private static func decode(stream: OpaquePointer, spotter: OpaquePointer) -> Bool {
     while SherpaOnnxIsKeywordStreamReady(spotter, stream) == 1 {
       SherpaOnnxDecodeKeywordStream(spotter, stream)
       guard let result = SherpaOnnxGetKeywordResult(spotter, stream) else { continue }
@@ -86,21 +191,6 @@ final class AlfredKeywordSpotter: WakeKeywordSpotting {
       // timestamps continuous so an ignored name cannot hide the next match.
     }
     return false
-  }
-
-  func close() {
-    lock.lock()
-    defer { lock.unlock() }
-    guard !isClosed else { return }
-    isClosed = true
-    if let stream { AlfredKwsFinishAndDestroyStream(stream) }
-    if let spotter { SherpaOnnxDestroyKeywordSpotter(spotter) }
-    stream = nil
-    spotter = nil
-  }
-
-  deinit {
-    close()
   }
 
   private static func prime(_ spotter: OpaquePointer, stream: OpaquePointer) throws {
@@ -117,9 +207,6 @@ final class AlfredKeywordSpotter: WakeKeywordSpotting {
         while SherpaOnnxIsKeywordStreamReady(spotter, stream) == 1 {
           SherpaOnnxDecodeKeywordStream(spotter, stream)
           guard let result = SherpaOnnxGetKeywordResult(spotter, stream) else { continue }
-          if let keywordPointer = result.pointee.keyword, !String(cString: keywordPointer).isEmpty {
-            SherpaOnnxResetKeywordStream(spotter, stream)
-          }
           SherpaOnnxDestroyKeywordResult(result)
         }
       }
