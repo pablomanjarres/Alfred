@@ -88,7 +88,7 @@ export async function runStandby(paths = servicePaths(), options: StandbyRunOpti
   options.signal?.addEventListener('abort', stop, { once: true });
   try {
     let ready = await clapStatus(paths, helper, runner);
-    if (!ready.ok && ready.detail.includes('notDetermined')) ready = await clapAuthorize(paths);
+    if (!ready.ok && ready.detail.includes('notDetermined')) ready = await clapAuthorize(paths, helper, runner, controller.signal);
     if (!ready.ok) { await alert(paths, `Alfred standby blocked: ${ready.detail}`); return 0; }
     await writeState(paths, 'running', 'Waiting for deliberate double clap. Speech recognition is not used by standby.');
     let cycles = 0;
@@ -114,10 +114,10 @@ export async function runStandby(paths = servicePaths(), options: StandbyRunOpti
   }
 }
 
-async function clapAuthorize(paths: StandbyPaths): Promise<{ ok: boolean; detail: string }> {
-  const helper = await helperPath();
+async function clapAuthorize(paths: StandbyPaths, helper: string | undefined = undefined, runner: Runner = runProcess, signal?: AbortSignal): Promise<{ ok: boolean; detail: string }> {
+  const resolvedHelper = helper ?? await helperPath();
   try {
-    const result = await runProcess(helper, ['clap-authorize'], { timeoutMs: 75_000 });
+    const result = await runner(resolvedHelper, ['clap-authorize'], { timeoutMs: 75_000, signal });
     await appendLog(paths, result.stdout + result.stderr);
     const event = parseEvents(result.stdout).find((item) => item.type === 'ready' || item.type === 'error');
     const detail = event?.message || event?.detail || result.stderr || 'microphone authorized for clap standby';
