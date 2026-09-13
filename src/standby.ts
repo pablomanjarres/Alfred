@@ -19,6 +19,7 @@ type Runner = typeof runProcess;
 export type StandbyPaths = ReturnType<typeof servicePaths>;
 export type StandbyState = { status: string; detail: string; updatedAt: string; lastAlertAt?: string };
 export type StandbyRunOptions = { helper?: string; maxCycles?: number; cue?: () => Promise<void>; runner?: Runner; signal?: AbortSignal; recoveryBackoffMs?: number };
+export type ReadinessOptions = { paths?: StandbyPaths; helper?: string; runner?: Runner; signal?: AbortSignal; updateState?: boolean };
 export function servicePaths(home = stateDirectory()) {
   const standby = join(home, 'standby');
   const launchAgents = process.env.ALFRED_LAUNCH_AGENTS_HOME || join(homedir(), 'Library', 'LaunchAgents');
@@ -62,11 +63,11 @@ export async function installService(options: { paths?: StandbyPaths } = {}): Pr
   return paths;
 }
 
-export async function startService(options: { paths?: StandbyPaths; launchctl?: Launchctl } = {}) {
+export async function startService(options: { paths?: StandbyPaths; launchctl?: Launchctl; helper?: string; runner?: Runner; signal?: AbortSignal } = {}) {
   const paths = await installService({ paths: options.paths });
-  let ready = await clapStatus(paths);
-  if (!ready.ok && ready.detail.includes('notDetermined')) ready = await clapAuthorize(paths);
-  if (!ready.ok) return serviceStatus({ paths, launchctl: options.launchctl });
+  const helper = options.helper ?? await helperPath();
+  const runner = options.runner ?? runProcess;
+  await ensureMicrophoneReady({ paths, helper, runner, signal: options.signal, updateState: true });
   const launchctl = options.launchctl ?? defaultLaunchctl;
   await launchctl('/bin/launchctl', ['bootout', serviceTarget()]).catch(() => ({ code: 0, stdout: '', stderr: '' }));
   const boot = await launchctl('/bin/launchctl', ['bootstrap', domain(), paths.plist]);
@@ -94,8 +95,7 @@ export async function runStandby(paths = servicePaths(), options: StandbyRunOpti
   if (options.signal?.aborted) stop();
   try {
     if (controller.signal.aborted) { await writeState(paths, 'stopped', 'Standby stopped.'); return 0; }
-    let ready = await clapStatus(paths, helper, runner);
-    if (!ready.ok && ready.detail.includes('notDetermined')) ready = await clapAuthorize(paths, helper, runner, controller.signal);
+    let ready = await microphoneReadiness({ paths, helper, runner, signal: controller.signal, updateState: true });
     if (!ready.ok) { await alert(paths, `Alfred standby blocked: ${ready.detail}`); return 0; }
     let cycles = 0;
     let scheduleCueNext = false;
@@ -137,38 +137,60 @@ export async function runStandby(paths = servicePaths(), options: StandbyRunOpti
   }
 }
 
-async function clapAuthorize(paths: StandbyPaths, helper: string | undefined = undefined, runner: Runner = runProcess, signal?: AbortSignal): Promise<{ ok: boolean; detail: string }> {
+export async function ensureMicrophoneReady(options: ReadinessOptions = {}): Promise<{ detail: string }> {
+  const ready = await microphoneReadiness(options);
+  if (!ready.ok) throw new Error(ready.detail);
+  return { detail: ready.detail };
+}
+
+async function microphoneReadiness(options: ReadinessOptions = {}): Promise<{ ok: boolean; detail: string }> {
+  const paths = options.paths ?? servicePaths();
+  const helper = options.helper ?? await helperPath();
+  const runner = options.runner ?? runProcess;
+  let ready = await clapStatus(paths, helper, runner, options.signal, options.updateState !== false);
+  if (!ready.ok && ready.detail.includes('notDetermined')) ready = await clapAuthorize(paths, helper, runner, options.signal, options.updateState !== false);
+  return ready;
+}
+
+async function clapAuthorize(paths: StandbyPaths, helper: string | undefined = undefined, runner: Runner = runProcess, signal?: AbortSignal, updateState = true): Promise<{ ok: boolean; detail: string }> {
   const resolvedHelper = helper ?? await helperPath();
   try {
     const result = await runner(resolvedHelper, ['clap-authorize'], { timeoutMs: 75_000, signal });
     await appendLog(paths, result.stdout + result.stderr);
     const event = parseEvents(result.stdout).find((item) => item.type === 'ready' || item.type === 'error');
-    const detail = detailText(event?.message ?? event?.detail ?? result.stderr ?? 'microphone authorized for clap standby');
-    if (result.code === 0 && event?.type !== 'error') return { ok: true, detail };
-    await writeBlockedState(paths, detail);
+    if (result.code === 0 && event?.type === 'ready') return { ok: true, detail: detailText(event.message ?? event.detail ?? 'microphone authorized for clap standby') };
+    const detail = readinessFailure('clap-authorize', result, event);
+    if (updateState) await writeBlockedState(paths, detail);
     return { ok: false, detail };
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    await writeBlockedState(paths, detail);
+    if (updateState) await writeBlockedState(paths, detail);
     return { ok: false, detail };
   }
 }
 
-async function clapStatus(paths: StandbyPaths, helper: string | undefined = undefined, runner: Runner = runProcess): Promise<{ ok: boolean; detail: string }> {
+async function clapStatus(paths: StandbyPaths, helper: string | undefined = undefined, runner: Runner = runProcess, signal?: AbortSignal, updateState = true): Promise<{ ok: boolean; detail: string }> {
   try {
     const resolvedHelper = helper ?? await helperPath();
-    const result = await runner(resolvedHelper, ['clap-doctor'], { timeoutMs: 10_000 });
+    const result = await runner(resolvedHelper, ['clap-doctor'], { timeoutMs: 10_000, signal });
     await appendLog(paths, result.stdout + result.stderr);
     const event = parseEvents(result.stdout).find((item) => item.type === 'ready' || item.type === 'error');
-    const detail = detailText(event?.message ?? event?.detail ?? result.stderr ?? 'clap detector ready');
-    if (result.code === 0 && event?.type !== 'error') return { ok: true, detail };
-    await writeBlockedState(paths, detail);
+    if (result.code === 0 && event?.type === 'ready') return { ok: true, detail: detailText(event.message ?? event.detail ?? 'clap detector ready') };
+    const detail = readinessFailure('clap-doctor', result, event);
+    if (updateState) await writeBlockedState(paths, detail);
     return { ok: false, detail };
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    await writeBlockedState(paths, detail);
+    if (updateState) await writeBlockedState(paths, detail);
     return { ok: false, detail };
   }
+}
+
+function readinessFailure(command: string, result: { code: number; stdout: string; stderr: string }, event: Event | undefined): string {
+  const detail = detailText(event?.message ?? event?.detail ?? result.stderr);
+  if (detail) return detail;
+  if (result.code !== 0) return `${command} exited with code ${result.code}.`;
+  return `${command} did not report ready.`;
 }
 
 async function runWakeWatchWithRetry(paths: StandbyPaths, helper: string, runner: Runner, signal?: AbortSignal, playCue = false, output = 'current', recoveryBackoffMs = 1000): Promise<string | undefined> {
