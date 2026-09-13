@@ -13,7 +13,8 @@ public enum CodexMicrophone {
     let root = appURL.resolvingSymlinksInPath().standardizedFileURL.path
     do {
       for object in try processObjects() {
-        guard let bundleID = try stringProperty(object, kAudioProcessPropertyBundleID), isCodexBundle(bundleID) else { continue }
+        let bundleID = try stringProperty(object, kAudioProcessPropertyBundleID)
+        guard isCodexBundle(bundleID) else { continue }
         let pid = try pidProperty(object)
         guard try processPath(for: pid).belongs(to: root) else { continue }
         if try boolProperty(object, kAudioProcessPropertyIsRunningInput) { return true }
@@ -32,24 +33,28 @@ public enum CodexMicrophone {
   @available(macOS 14.2, *)
   private static func processObjects() throws -> [AudioObjectID] {
     var address = property(kAudioHardwarePropertyProcessObjectList)
-    guard AudioObjectHasProperty(AudioObjectID(kAudioObjectSystemObject), &address) else { return [] }
+    guard AudioObjectHasProperty(AudioObjectID(kAudioObjectSystemObject), &address) else { throw Error.unknown("CoreAudio system object is missing the process list property.") }
     var size: UInt32 = 0
     try check(AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size))
     guard size > 0 else { return [] }
+    guard size % UInt32(MemoryLayout<AudioObjectID>.stride) == 0 else { throw Error.unknown("CoreAudio process list returned an invalid byte size.") }
+    let requestedSize = size
     let count = Int(size) / MemoryLayout<AudioObjectID>.stride
     var objects = Array(repeating: AudioObjectID(kAudioObjectUnknown), count: count)
     try objects.withUnsafeMutableBufferPointer { buffer in
       guard let base = buffer.baseAddress else { return }
       try check(AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, base))
     }
-    return objects.filter { $0 != AudioObjectID(kAudioObjectUnknown) }
+    guard size <= requestedSize, size % UInt32(MemoryLayout<AudioObjectID>.stride) == 0 else { throw Error.unknown("CoreAudio process list changed while being read.") }
+    return objects.prefix(Int(size) / MemoryLayout<AudioObjectID>.stride).filter { $0 != AudioObjectID(kAudioObjectUnknown) }
   }
 
   @available(macOS 14.2, *)
   private static func pidProperty(_ object: AudioObjectID) throws -> pid_t {
     var pid = pid_t(0)
     var size = UInt32(MemoryLayout<pid_t>.stride)
-    try read(object, selector: kAudioProcessPropertyPID, size: &size, data: &pid)
+    try read(object, selector: kAudioProcessPropertyPID, size: &size, expectedSize: UInt32(MemoryLayout<pid_t>.stride), data: &pid)
+    guard pid > 0 else { throw Error.unknown("CoreAudio process object returned an invalid pid.") }
     return pid
   }
 
@@ -57,23 +62,25 @@ public enum CodexMicrophone {
   private static func boolProperty(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector) throws -> Bool {
     var value = UInt32(0)
     var size = UInt32(MemoryLayout<UInt32>.stride)
-    try read(object, selector: selector, size: &size, data: &value)
+    try read(object, selector: selector, size: &size, expectedSize: UInt32(MemoryLayout<UInt32>.stride), data: &value)
     return value != 0
   }
 
   @available(macOS 14.2, *)
-  private static func stringProperty(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector) throws -> String? {
+  private static func stringProperty(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector) throws -> String {
     var value: Unmanaged<CFString>?
     var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.stride)
-    try read(object, selector: selector, size: &size, data: &value)
-    return value?.takeRetainedValue() as String?
+    try read(object, selector: selector, size: &size, expectedSize: UInt32(MemoryLayout<Unmanaged<CFString>?>.stride), data: &value)
+    guard let value else { throw Error.unknown("CoreAudio process object returned a nil bundle id.") }
+    return value.takeRetainedValue() as String
   }
 
   @available(macOS 14.2, *)
-  private static func read(_ object: AudioObjectID, selector: AudioObjectPropertySelector, size: inout UInt32, data: UnsafeMutableRawPointer) throws {
+  private static func read(_ object: AudioObjectID, selector: AudioObjectPropertySelector, size: inout UInt32, expectedSize: UInt32, data: UnsafeMutableRawPointer) throws {
     var address = property(selector)
     guard AudioObjectHasProperty(object, &address) else { throw Error.unknown("CoreAudio process object is missing property \(selector).") }
     try check(AudioObjectGetPropertyData(object, &address, 0, nil, &size, data))
+    guard size == expectedSize else { throw Error.unknown("CoreAudio process property \(selector) returned an invalid byte size.") }
   }
 
   @available(macOS 14.2, *)
