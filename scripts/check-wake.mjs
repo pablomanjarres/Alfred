@@ -23,6 +23,7 @@ try {
     ['Daniel', 'Alfredo', false], ['Samantha', 'Alfred', true],
     ['Eddy (English (US))', 'Alfred', true], ['Paulina', 'Hey Alfred', true],
     ['Paulina', 'Alfredo', false], ['Eddy (English (US))', 'Alfredo', false],
+    ['Paulina', 'Alfred', true], ['Samantha', 'Alfredo', false],
   ].entries()) {
     const file = join(fixtures, `${index}.aiff`);
     run('/usr/bin/say', ['-v', voice, '-o', file, phrase]);
