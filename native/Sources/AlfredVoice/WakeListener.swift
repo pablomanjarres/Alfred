@@ -23,15 +23,23 @@ func waitForWake(using keyword: WakeKeywordSpotting) throws -> Bool {
   let heard = Locked<String?>(nil)
   let failure = Locked<String?>(nil)
   let stopping = Locked(false)
+  let cancelled = Locked(false)
+  let sleeping = Locked(false)
   let lastAudio = Locked(ProcessInfo.processInfo.systemUptime)
   let frames = Locked(0)
   let maxCapacity = Locked(0.0)
   let maxProcessing = Locked(0.0)
   let started = ProcessInfo.processInfo.systemUptime
+  var tapInstalled = false
+  func stopCapture() {
+    engine.stop()
+    if tapInstalled { input.removeTap(onBus: 0); tapInstalled = false }
+    keyword.close()
+  }
   let signals = [SIGTERM, SIGINT].map { number -> DispatchSourceSignal in
     signal(number, SIG_IGN)
     let source = DispatchSource.makeSignalSource(signal: number, queue: .main)
-    source.setEventHandler { stopping.set(true) }
+    source.setEventHandler { cancelled.set(true); stopping.set(true) }
     source.resume()
     return source
   }
@@ -41,8 +49,14 @@ func waitForWake(using keyword: WakeKeywordSpotting) throws -> Bool {
   }
   let sleepObserver = NSWorkspace.shared.notificationCenter.addObserver(
     forName: NSWorkspace.willSleepNotification, object: nil, queue: .main
-  ) { _ in stopping.set(true) }
-  defer { NSWorkspace.shared.notificationCenter.removeObserver(sleepObserver) }
+  ) { _ in sleeping.set(true); stopping.set(true); stopCapture() }
+  let wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+    forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+  ) { _ in sleeping.set(false) }
+  defer {
+    NSWorkspace.shared.notificationCenter.removeObserver(sleepObserver)
+    NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
+  }
 
   input.installTap(onBus: 0, bufferSize: 1_024, format: format) { buffer, _ in
     do {
@@ -64,12 +78,7 @@ func waitForWake(using keyword: WakeKeywordSpotting) throws -> Bool {
       } else if try keyword.decode() { heard.set("Alfred") }
     } catch { failure.set(String(describing: error)) }
   }
-  var tapInstalled = true
-  func stopCapture() {
-    engine.stop()
-    if tapInstalled { input.removeTap(onBus: 0); tapInstalled = false }
-    keyword.close()
-  }
+  tapInstalled = true
   defer { stopCapture() }
   try engine.start()
   emit("ready", ["status": "wake", "detail": "Double clap or Alfred; local keyword detection; no recordings"])
@@ -82,6 +91,12 @@ func waitForWake(using keyword: WakeKeywordSpotting) throws -> Bool {
   }
   // Release native waveform tails before reporting a trigger or going idle.
   stopCapture()
+  if sleeping.get() {
+    emit("paused", ["status": "sleep", "detail": "Microphone stopped and wake buffers cleared before sleep"])
+    while sleeping.get() && !cancelled.get() {
+      RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+    }
+  }
   if let error = failure.get() { throw WakeAudioError(description: error) }
   let proof: [String: Any] = [
     "frames": frames.get(), "maxCapacitySeconds": maxCapacity.get(),
