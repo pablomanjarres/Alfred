@@ -203,7 +203,7 @@ func listenOnce(_ locale: String) {
   if finalText.get().isEmpty { fail("no final transcript produced") }
   emit("transcript", ["text": finalText.get()])
 }
-func waitForClap() {
+func waitForClap() -> Bool {
   authorizeMic()
   let engine = AVAudioEngine()
   let input = engine.inputNode
@@ -226,10 +226,15 @@ func waitForClap() {
     if detector.push(rms: rms, peak: peak, time: Date().timeIntervalSince(start)) { heard.set(true) }
   }
   do { try engine.start() } catch { fail("audio engine could not start: \(error.localizedDescription)") }
-  if !waitUntil(Date().addingTimeInterval(120), { heard.get() }) { fail("double clap was not heard") }
+  let detected = waitUntil(Date().addingTimeInterval(120), { heard.get() })
   engine.stop()
   input.removeTap(onBus: 0)
+  if !detected {
+    emit("idle", ["status": "clap"])
+    return false
+  }
   _ = Process.launchedProcess(launchPath: "/usr/bin/caffeinate", arguments: ["-u", "-t", "3"])
+  return true
 }
 let options = parseOptions()
 switch options.command {
@@ -239,6 +244,6 @@ case "file":
   guard let file = options.file else { fail("file mode requires --file") }
   transcribeFile(file, options.locale)
 case "listen": listenOnce(options.locale)
-case "clap": waitForClap(); listenOnce(options.locale)
+case "clap": if waitForClap() { listenOnce(options.locale) }
 default: fail("unknown command \(options.command)")
 }
