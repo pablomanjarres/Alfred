@@ -5,6 +5,7 @@ struct Options {
   var command = "listen"
   var locale = Locale.current.identifier
   var file: String?
+  var cue = false
 }
 func emit(_ type: String, _ fields: [String: Any] = [:]) {
   var object = fields
@@ -45,6 +46,9 @@ func parseOptions() -> Options {
       index += 1
       guard index < args.count else { fail("--file needs a value") }
       options.file = args[index]
+    case "--cue":
+      guard options.command == "wake-watch" else { fail("--cue requires wake-watch") }
+      options.cue = true
     default:
       fail("unknown argument \(args[index])")
     }
@@ -339,13 +343,17 @@ case "clap-doctor": clapDoctor()
 case "selftest": selftest()
 case "clap-selftest": clapPrivacySelftest()
 case "wake-audio-selftest": wakeAudioSelftest()
+case "wake-cue":
+  do { try playWakeCue() } catch { fail(String(describing: error)) }
 case "wake-watch", "wake-file":
   do {
     guard let resources = Bundle.main.resourceURL else {
       throw WakeAudioError(description: "Alfred wake resources are missing")
     }
     let keyword = try AlfredKeywordSpotter(resourcesDirectory: resources)
-    if options.command == "wake-watch" { _ = try waitForWake(using: keyword) }
+    if options.command == "wake-watch" {
+      _ = try waitForWake(using: keyword, cueBeforeListening: options.cue)
+    }
     else {
       guard let file = options.file else {
         keyword.close()

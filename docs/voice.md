@@ -36,9 +36,9 @@ Exports:
 
 ## Wake standby
 
-`alfred standby start` installs and starts `~/Library/LaunchAgents/com.pablo.alfred.standby.plist`. The standby service waits for either a deliberate double clap or the local “Alfred” keyword, wakes the display, plays a short cue, and immediately rearms. It never invokes Apple Speech, Codex, or transcription from the background service. Use `alfred standby stop` to unload it and `alfred standby status` to inspect the LaunchAgent plus the private state file.
+`alfred standby start` installs and starts `~/Library/LaunchAgents/com.pablo.alfred.standby.plist`. It waits for a double clap or “Alfred” and wakes the display. After a trigger, it prepares the next listener, plays a short cue through your current audio output, then starts capture. Wait for the cue to finish before another attempt. It never invokes Apple Speech, Codex, or transcription from standby. Use `alfred standby stop` to unload it and `alfred standby status` to check it.
 
-Standby state and bounded logs live under `~/.alfred/standby/` with user-only permissions. The log contains JSON status lines and scalar proof such as frame counts, last-frame timestamps, maximum buffer duration, and `rawAudio: erased`. It never logs raw samples. The native tap uses short chunks, rejects buffers over one second, computes only local wake features, and wipes float PCM buffers before returning from the tap.
+Standby state and bounded logs live under `~/.alfred/standby/` with user-only permissions. Logs contain timestamps, trigger/cue outcomes, frame counts, maximum buffer duration, and `rawAudio: erased`. They never contain raw samples. The native tap rejects buffers over 250 ms, computes local wake features, and wipes PCM buffers before neural decoding. Playback failures are reported instead of being hidden.
 
 ## Permissions
 
@@ -68,7 +68,7 @@ The native helper writes UTF-8 JSON lines to stdout:
 {"type":"error","message":"microphone permission was not granted"}
 ```
 
-The event types are `ready`, `listening`, `transcript`, `error`, `clap`, `wake`, `paused`, and `idle`. A `wake` event has status `clap` or `Alfred`. A `paused` event means the watcher stopped microphone capture for system sleep. An `idle` event means the wake window ended without a trigger; it contains no order.
+The event types are `ready`, `listening`, `transcript`, `error`, `clap`, `wake`, `cue`, `paused`, and `idle`. A `wake` event has status `clap` or `Alfred`. A `cue` event confirms playback ended; `ready` follows when capture starts. A `paused` event means capture stopped for system sleep. An `idle` event ends a window without a trigger; it contains no order.
 
 ## Verification Limits
 
