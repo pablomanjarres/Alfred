@@ -145,12 +145,12 @@ if (args[0] === 'clap-doctor') {
   process.exit(0);
 }
 if (args[0] !== 'clap-watch') process.exit(9);
-writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
-console.log(JSON.stringify({ type: 'listening', status: 'clap' }));
 process.on('SIGTERM', () => {
   writeFileSync(${JSON.stringify(stopped)}, 'stopped');
   process.exit(0);
 });
+writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+console.log(JSON.stringify({ type: 'listening', status: 'clap' }));
 setInterval(() => {}, 1000);
 `, 'utf8');
   await chmod(helper, 0o755);
