@@ -5,7 +5,7 @@ import { loadConfig, stateDirectory, type Config } from './config.js';
 import { executeOrder } from './assistant.js';
 import { receipts } from './history.js';
 import { runProcess } from './process.js';
-import { transcribe, speak } from './voice.js';
+import { ClapIdleError, transcribe, speak } from './voice.js';
 import { doctor } from './doctor.js';
 
 const HELP = `Alfred, at your service.
@@ -64,11 +64,17 @@ async function main() {
     if (command === 'transcribe' && positionals.length !== 1) throw new Error('Provide one audio file path.');
     if (['listen', 'clap'].includes(command) && positionals.length) throw new Error(`${command} does not take text arguments.`);
     do {
-      const order = command === 'ask' ? positionals.join(' ') : await transcribe({
-        mode: command === 'transcribe' ? 'file' : command as 'listen' | 'clap',
-        file: command === 'transcribe' ? resolve(positionals[0]) : undefined,
-        locale: config.locale, signal, onStatus: (status) => console.error(status),
-      });
+      let order: string;
+      try {
+        order = command === 'ask' ? positionals.join(' ') : await transcribe({
+          mode: command === 'transcribe' ? 'file' : command as 'listen' | 'clap',
+          file: command === 'transcribe' ? resolve(positionals[0]) : undefined,
+          locale: config.locale, signal, onStatus: (status) => console.error(status),
+        });
+      } catch (error) {
+        if (error instanceof ClapIdleError && values.loop) continue;
+        throw error;
+      }
       if (signal.aborted) break;
       console.error(command === 'ask' ? 'On it.' : `Heard: ${order}`);
       const receipt = await executeOrder(order, config, { fresh: values.new, signal });

@@ -11,8 +11,11 @@ export type TranscribeOptions = {
   onStatus?: (status: string) => void;
 };
 export type VoiceStatus = { available: boolean; detail: string };
+export class ClapIdleError extends Error {
+  constructor() { super('No double clap was heard.'); this.name = 'ClapIdleError'; }
+}
 type HelperEvent =
-  | { type: 'ready' | 'listening'; status?: string; detail?: string }
+  | { type: 'ready' | 'listening' | 'idle'; status?: string; detail?: string }
   | { type: 'transcript'; text?: string }
   | { type: 'error'; message?: string; detail?: string };
 type ChildResult = { code: number; stderr: string };
@@ -96,6 +99,7 @@ async function runHelperForTranscript(
 ): Promise<string> {
   let transcript: string | undefined;
   let helperError: string | undefined;
+  let idle = false;
   const result = await runChild(helper, args, {
     signal: options.signal,
     timeoutMs: envMs('ALFRED_VOICE_TIMEOUT_MS', args[0] === 'clap' ? 180_000 : 45_000),
@@ -103,6 +107,7 @@ async function runHelperForTranscript(
     onLine: (line, child) => {
       const event = JSON.parse(line) as HelperEvent;
       if (event.type === 'ready' || event.type === 'listening') options.onStatus?.(event.status ?? event.type);
+      else if (event.type === 'idle' && args[0] === 'clap') idle = true;
       else if (event.type === 'transcript' && event.text !== undefined) {
         transcript = event.text;
         child.closeAfterTranscript();
@@ -112,6 +117,7 @@ async function runHelperForTranscript(
   if (helperError) throw new Error(helperError);
   if (transcript !== undefined) return transcript;
   if (result.code !== 0) throw new Error(result.stderr || `voice helper exited with code ${result.code}`);
+  if (idle) throw new ClapIdleError();
   throw new Error('voice helper exited without a transcript');
 }
 function runHelperForStatus(helper: string, args: string[]): Promise<string> {
