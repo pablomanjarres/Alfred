@@ -72,4 +72,4 @@ The event types are `ready`, `listening`, `transcript`, `error`, `clap`, `wake`,
 
 ## Verification Limits
 
-The no-microphone checks compile the helper, test clap detection and main-queue callback delivery, run the clap and wake audio privacy selftests, and run the non-prompting doctor command. They do not claim anything about Codex desktop's separate voice capture.
+The no-microphone checks compile the helper, test clap detection and main-queue callback delivery, run the clap privacy selftest, and run the non-prompting doctor command. The native wake-audio selftest separately covers local keyword audio conversion, bounded buffers, and erasure. These checks do not claim anything about Codex desktop's separate voice capture.
