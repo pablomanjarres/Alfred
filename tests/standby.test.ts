@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { LABEL, buildPlist, runStandby, servicePaths, serviceStatus, stopService, writeBlockedState } from '../src/standby.ts';
+import { LABEL, buildPlist, playCue, runStandby, servicePaths, serviceStatus, stopService, writeBlockedState } from '../src/standby.ts';
 
 test('LaunchAgent plist starts standby without restart storms on clean exits', () => {
   const plist = buildPlist({
@@ -165,6 +165,9 @@ test('microphone status follows native ready and paused events', async () => {
       },
     });
     assert.equal(await readStatus(), 'stopped');
+    const log = await readFile(paths.log, 'utf8');
+    assert.match(log, /"type":"ready"/);
+    assert.match(log, /"at":"\d{4}-\d{2}-\d{2}T/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -203,6 +206,46 @@ test('wake watch retries one sleep-length timeout before rearming', async () => 
   }
 });
 
+
+
+test('default cue failures are surfaced instead of swallowed', async () => {
+  await assert.rejects(playCue(async () => ({ code: 1, stdout: '', stderr: 'no output device' })), /no output device/);
+});
+
+
+test('default cue allows measured Bluetooth playback latency', async () => {
+  const calls: number[] = [];
+  await playCue(async (_binary, _args, options) => {
+    calls.push(options.timeoutMs);
+    return { code: 0, stdout: '', stderr: '' };
+  });
+  assert.deepEqual(calls, [10_000]);
+});
+
+test('standby logs wake and cue outcomes without reporting failed cues as success', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
+  try {
+    assert.equal(await runStandby(servicePaths(root), {
+      helper: '/fake/helper', maxCycles: 1,
+      runner: async (_binary, args, options) => {
+        if (args[0] === 'clap-doctor') return { code: 0, stdout: JSON.stringify({ type: 'ready', detail: 'microphone=authorized audioInput=true speech=unused' }) + '\n', stderr: '' };
+        if (args[0] === 'wake-watch') return { code: 0, stdout: JSON.stringify({ type: 'wake', status: 'clap', detail: { rawAudio: 'erased' } }) + '\n', stderr: '' };
+        if (args[0] === '/System/Library/Sounds/Ping.aiff') return { code: 1, stdout: '', stderr: 'headphones unavailable' };
+        throw new Error('unexpected helper command');
+      },
+    }), 0);
+    const state = JSON.parse(await readFile(join(root, 'standby', 'state.json'), 'utf8'));
+    assert.equal(state.status, 'blocked');
+    assert.match(state.detail, /headphones unavailable/);
+    const log = await readFile(join(root, 'standby', 'standby.log'), 'utf8');
+    assert.match(log, /"type":"wake"/);
+    assert.match(log, /"type":"cue"/);
+    assert.match(log, /"status":"failed"/);
+    assert.match(log, /"at":"\d{4}-\d{2}-\d{2}T/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test('status verifies the launchd pid is actually running', async () => {
   const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
