@@ -25,5 +25,16 @@ func runVoiceTaskSelectionTests() {
   expect(VoiceTaskSelection.canRestoreProbeClipboard(copiedLink: previousLink, clipboardChanged: true, appIsFrontmost: true, clipboardUnchangedSinceProbe: true), "fresh wrong-task probe links can be restored before refusing voice dispatch")
   expect(!VoiceTaskSelection.canRestoreProbeClipboard(copiedLink: "notes", clipboardChanged: true, appIsFrontmost: true, clipboardUnchangedSinceProbe: true), "unrelated clipboard changes are not treated as restorable probe output")
   expect(!VoiceTaskSelection.canRestoreProbeClipboard(copiedLink: previousLink, clipboardChanged: true, appIsFrontmost: true, clipboardUnchangedSinceProbe: false), "wrong-task probe links cannot overwrite concurrent clipboard changes")
+  func outcome(_ link: String?, changed: Bool = true, frontmost: Bool = true, expired: Bool = false, current: Bool = true) -> VoiceTaskProbeOutcome {
+    VoiceTaskSelection.probeOutcome(threadId: target, copiedLink: link, clipboardChanged: changed,
+                                    appIsFrontmost: frontmost, expired: expired, requestIsCurrent: current)
+  }
+  expect(outcome(previousLink) == .waiting, "a fresh previous-task link waits for asynchronous navigation")
+  expect(outcome(expectedLink) == .confirmed, "selection can succeed after a previous-task probe")
+  expect(outcome(previousLink, expired: true) == .blocked, "navigation retries stop at the deadline")
+  expect(outcome(expectedLink, current: false) == .blocked, "a cancelled request cannot start from a late copied link")
+  expect(outcome(expectedLink, frontmost: false) == .blocked, "losing focus after a probe blocks voice start")
+  expect(outcome(nil, changed: false) == .waiting, "pending copy commands do not immediately fail navigation")
+  expect(outcome("new user clipboard") == .blocked, "unrelated clipboard changes stop navigation probing")
   print("VoiceTaskSelectionTests passed")
 }
