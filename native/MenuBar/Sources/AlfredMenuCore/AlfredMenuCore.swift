@@ -3,16 +3,18 @@ import Foundation
 public struct AlfredCLIConfig: Codable, Equatable {
   public let nodePath: String
   public let cliPath: String
+  public let stateHome: String?
 
-  public init(nodePath: String, cliPath: String) throws {
-    guard nodePath.hasPrefix("/"), cliPath.hasPrefix("/") else { throw ConfigError.relativePath }
+  public init(nodePath: String, cliPath: String, stateHome: String? = nil) throws {
+    guard nodePath.hasPrefix("/"), cliPath.hasPrefix("/"), stateHome == nil || stateHome!.hasPrefix("/") else { throw ConfigError.relativePath }
     self.nodePath = nodePath
     self.cliPath = cliPath
+    self.stateHome = stateHome
   }
 
   public static func load(from url: URL) throws -> AlfredCLIConfig {
     let decoded = try JSONDecoder().decode(AlfredCLIConfig.self, from: Data(contentsOf: url))
-    return try AlfredCLIConfig(nodePath: decoded.nodePath, cliPath: decoded.cliPath)
+    return try AlfredCLIConfig(nodePath: decoded.nodePath, cliPath: decoded.cliPath, stateHome: decoded.stateHome)
   }
 
   enum ConfigError: Error { case relativePath }
@@ -60,6 +62,11 @@ public struct StandbySnapshot: Decodable, Equatable {
     let text = state?.detail.isEmpty == false ? state!.detail : detail
     let output = cueOutput ?? .current
     if status == "blocked" { return MenuState(kind: .blocked, detail: text, micIndicator: false, cueOutput: output) }
+    if status == "handed-off" { return MenuState(kind: .handedOff, detail: text, micIndicator: false, cueOutput: output) }
+    if status == "handoff" {
+      let alive = loaded && running && pid != nil && now.timeIntervalSince(state?.updatedAt ?? .distantPast) <= 45
+      return MenuState(kind: alive ? .handoff : .blocked, detail: alive ? text : "Voice handoff stopped. Choose Start listening.", micIndicator: false, cueOutput: output)
+    }
     if status == "paused" { return MenuState(kind: .paused, detail: text, micIndicator: false, cueOutput: output) }
     if status == "starting" { return MenuState(kind: .starting, detail: text, micIndicator: false, cueOutput: output) }
     guard loaded, running, pid != nil else { return MenuState(kind: .stopped, detail: text, micIndicator: false, cueOutput: output) }
@@ -84,6 +91,8 @@ public struct MenuState: Equatable {
     switch kind {
     case .listening: return "Listening for clap or Alfred"
     case .starting: return "Starting listener"
+    case .handoff: return "Opening Codex voice chat"
+    case .handedOff: return "Voice chat in Codex"
     case .paused: return "Paused for system sleep"
     case .blocked: return "Listener blocked"
     case .stale: return "Listener state stale"
@@ -92,7 +101,7 @@ public struct MenuState: Equatable {
   }
 }
 
-public enum MenuStateKind: Equatable { case listening, starting, paused, blocked, stale, stopped }
+public enum MenuStateKind: Equatable { case listening, starting, handoff, handedOff, paused, blocked, stale, stopped }
 
 public struct MenuActionError: Equatable {
   public let message: String

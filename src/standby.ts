@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { runProcess } from './process.js';
 import { cueOutput, stateDirectory } from './config.js';
+import { cancelHandoff, requestVoiceHandoff } from './handoff.js';
 
 export const LABEL = 'com.pablo.alfred.standby';
 const LOG_LIMIT = 128 * 1024;
@@ -18,7 +19,7 @@ export type Launchctl = (command: string, args: string[]) => Promise<{ code: num
 type Runner = typeof runProcess;
 export type StandbyPaths = ReturnType<typeof servicePaths>;
 export type StandbyState = { status: string; detail: string; updatedAt: string; lastAlertAt?: string };
-export type StandbyRunOptions = { helper?: string; maxCycles?: number; cue?: () => Promise<void>; runner?: Runner; signal?: AbortSignal; recoveryBackoffMs?: number };
+export type StandbyRunOptions = { helper?: string; maxCycles?: number; cue?: () => Promise<void>; handoff?: false | ((trigger: string) => Promise<void>); handoffSupported?: () => Promise<boolean>; runner?: Runner; signal?: AbortSignal; recoveryBackoffMs?: number };
 export type ReadinessOptions = { paths?: StandbyPaths; helper?: string; runner?: Runner; signal?: AbortSignal; updateState?: boolean };
 export function servicePaths(home = stateDirectory()) {
   const standby = join(home, 'standby');
@@ -43,6 +44,19 @@ export function buildPlist(input: { node: string; script: string; alfredHome: st
 `;
 }
 export async function writeBlockedState(paths: StandbyPaths, detail: string): Promise<void> { await writeState(paths, 'blocked', detail); }
+
+export async function codexVoiceHandoffSupported(options: { runner?: Runner; signal?: AbortSignal } = {}): Promise<boolean> {
+  if (!options.runner && process.platform !== 'darwin') return false;
+  try {
+    const result = await (options.runner ?? runProcess)('/usr/bin/sw_vers', ['-productVersion'], { timeoutMs: 2_000, signal: options.signal });
+    if (result.code !== 0) return false;
+    const [major = 0, minor = 0] = result.stdout.trim().split('.').map((part) => Number.parseInt(part, 10));
+    return major > 14 || (major === 14 && minor >= 2);
+  } catch {
+    options.signal?.throwIfAborted();
+    return false;
+  }
+}
 export async function serviceStatus(options: { paths?: StandbyPaths; launchctl?: Launchctl } = {}) {
   const paths = options.paths ?? servicePaths();
   const launchctl = options.launchctl ?? defaultLaunchctl;
@@ -64,7 +78,9 @@ export async function installService(options: { paths?: StandbyPaths } = {}): Pr
 }
 
 export async function startService(options: { paths?: StandbyPaths; launchctl?: Launchctl; helper?: string; runner?: Runner; signal?: AbortSignal } = {}) {
-  const paths = await installService({ paths: options.paths });
+  const paths = options.paths ?? servicePaths();
+  await cancelHandoff(paths);
+  await installService({ paths });
   const helper = options.helper ?? await helperPath();
   const runner = options.runner ?? runProcess;
   await ensureMicrophoneReady({ paths, helper, runner, signal: options.signal, updateState: true });
@@ -78,6 +94,7 @@ export async function startService(options: { paths?: StandbyPaths; launchctl?: 
 
 export async function stopService(options: { paths?: StandbyPaths; launchctl?: Launchctl } = {}): Promise<void> {
   const paths = options.paths ?? servicePaths();
+  await cancelHandoff(paths);
   const launchctl = options.launchctl ?? defaultLaunchctl;
   await launchctl('/bin/launchctl', ['bootout', serviceTarget()]).catch(() => ({ code: 0, stdout: '', stderr: '' }));
   const status = await serviceStatus({ paths, launchctl });
@@ -97,6 +114,7 @@ export async function runStandby(paths = servicePaths(), options: StandbyRunOpti
     if (controller.signal.aborted) { await writeState(paths, 'stopped', 'Standby stopped.'); return 0; }
     let ready = await microphoneReadiness({ paths, helper, runner, signal: controller.signal, updateState: true });
     if (!ready.ok) { await alert(paths, `Alfred standby blocked: ${ready.detail}`); return 0; }
+    const canHandoff = !options.cue && options.handoff !== false && await (options.handoffSupported ?? (() => codexVoiceHandoffSupported({ runner, signal: controller.signal })))();
     let cycles = 0;
     let scheduleCueNext = false;
     while (!controller.signal.aborted && (options.maxCycles === undefined || cycles < options.maxCycles)) {
@@ -104,7 +122,7 @@ export async function runStandby(paths = servicePaths(), options: StandbyRunOpti
       try {
         await writeState(paths, 'starting', 'Preparing local clap and Alfred wake detection.');
         const output = await cueOutput(paths.home);
-        const trigger = await runWakeWatchWithRetry(paths, helper, runner, controller.signal, options.cue ? false : scheduleCueNext, output, options.recoveryBackoffMs ?? 1000);
+        const trigger = await runWakeWatchWithRetry(paths, helper, runner, controller.signal, options.cue || options.handoff === false || !canHandoff ? scheduleCueNext : false, output, options.recoveryBackoffMs ?? 1000);
         scheduleCueNext = false;
         if (trigger) {
           await writeState(paths, 'starting', `${trigger} heard; microphone stopped for the cue.`);
@@ -117,8 +135,15 @@ export async function runStandby(paths = servicePaths(), options: StandbyRunOpti
               await logEvent(paths, { type: 'cue', status: 'failed', detail });
               throw new Error(`cue failed: ${detail}`);
             }
-          } else {
+          } else if (options.handoff === false || !canHandoff) {
             scheduleCueNext = true;
+          } else {
+            await playWakeCue(paths, helper, runner, controller.signal, output);
+            await writeState(paths, 'handoff', `${trigger} heard; opening Codex voice.`);
+            if (typeof options.handoff === 'function') await options.handoff(trigger);
+            else await requestVoiceHandoff({ paths, runner, signal: controller.signal });
+            await writeState(paths, 'handed-off', 'Voice chat is in Codex. Choose Start listening after ending the call.');
+            return 0;
           }
         }
       } catch (error) {
@@ -132,6 +157,7 @@ export async function runStandby(paths = servicePaths(), options: StandbyRunOpti
     await writeState(paths, 'stopped', 'Standby stopped.');
     return 0;
   } finally {
+    if (controller.signal.aborted) await cancelHandoff(paths);
     process.removeListener('SIGTERM', stop); process.removeListener('SIGINT', stop);
     options.signal?.removeEventListener('abort', stop);
   }
@@ -191,6 +217,17 @@ function readinessFailure(command: string, result: { code: number; stdout: strin
   if (detail) return detail;
   if (result.code !== 0) return `${command} exited with code ${result.code}.`;
   return `${command} did not report ready.`;
+}
+
+
+async function playWakeCue(paths: StandbyPaths, helper: string, runner: Runner, signal: AbortSignal | undefined, output: string): Promise<void> {
+  const result = await runner(helper, ['wake-cue', '--cue-output', output], { timeoutMs: 10_000, signal });
+  await appendLog(paths, result.stdout + result.stderr);
+  const events = parseEvents(result.stdout);
+  const error = events.find((item) => item.type === 'error');
+  if (error) throw new Error(detailText(error.message ?? error.detail ?? 'wake cue failed'));
+  if (result.code !== 0) throw new Error(result.stderr || `wake cue exited with code ${result.code}`);
+  if (!events.some((item) => item.type === 'cue' && item.status === 'played')) throw new Error('wake cue did not report played.');
 }
 
 async function runWakeWatchWithRetry(paths: StandbyPaths, helper: string, runner: Runner, signal?: AbortSignal, playCue = false, output = 'current', recoveryBackoffMs = 1000): Promise<string | undefined> {
