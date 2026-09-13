@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { handoffCancelledPath, handoffPath, type HandoffRecord } from '../src/handoff.ts';
-import { LABEL, buildPlist, ensureMicrophoneReady, runStandby, servicePaths, serviceStatus, startService, stopService, writeBlockedState } from '../src/standby.ts';
+import { LABEL, buildPlist, codexVoiceHandoffSupported, ensureMicrophoneReady, runStandby, servicePaths, serviceStatus, startService, stopService, writeBlockedState } from '../src/standby.ts';
 
 test('LaunchAgent plist starts standby without restart storms on clean exits', () => {
   const plist = buildPlist({
@@ -255,14 +255,47 @@ test('wake watch fatal errors are not retried as audio interruption recovery', a
 });
 
 
-test('standby hands off to the menu after a wake cue and exits handed off', async () => {
+test('standby falls back to cue-only rearm on macOS 13 and 14.1', async () => {
+  for (const version of ['13.6.9', '14.1']) {
+    const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
+    const paths = isolatedServicePaths(root);
+    const calls: string[][] = [];
+    const handoffs: string[] = [];
+    try {
+      assert.equal(await runStandby(paths, {
+        helper: '/fake/helper', maxCycles: 2,
+        handoff: async (trigger) => { handoffs.push(trigger); },
+        handoffSupported: () => macOS(version),
+        runner: async (_binary, args, options) => {
+          calls.push(args);
+          if (args[0] === 'clap-doctor') return { code: 0, stdout: JSON.stringify({ type: 'ready', detail: 'microphone=authorized audioInput=true speech=unused' }) + '\n', stderr: '' };
+          if (args[0] === 'wake-watch' && !args.includes('--cue')) return { code: 0, stdout: JSON.stringify({ type: 'wake', status: 'Alfred', detail: { rawAudio: 'erased' } }) + '\n', stderr: '' };
+          if (args[0] === 'wake-watch' && args.includes('--cue')) {
+            options.onLine?.(JSON.stringify({ type: 'cue', status: 'played', detail: 'native cue completed' }));
+            options.onLine?.(JSON.stringify({ type: 'ready', detail: 'Waiting for Alfred' }));
+            return { code: 0, stdout: JSON.stringify({ type: 'idle', status: 'wake' }) + '\n', stderr: '' };
+          }
+          throw new Error(`unexpected helper command ${args.join(' ')}`);
+        },
+      }), 0);
+
+      assert.deepEqual(calls, [['clap-doctor'], ['wake-watch', '--cue-output', 'current'], ['wake-watch', '--cue', '--cue-output', 'current']]);
+      assert.deepEqual(handoffs, []);
+      assert.notEqual(JSON.parse(await readFile(paths.state, 'utf8')).status, 'blocked');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('standby hands off to the menu on macOS 14.2 and exits handed off', async () => {
   const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
   const paths = isolatedServicePaths(root);
   const calls: string[][] = [];
   const handoffs: string[] = [];
   try {
     assert.equal(await runStandby(paths, {
-      helper: '/fake/helper', maxCycles: 3, handoff: async (trigger) => {
+      helper: '/fake/helper', maxCycles: 3, handoffSupported: () => macOS('14.2'), handoff: async (trigger) => {
         assert.equal(JSON.parse(await readFile(paths.state, 'utf8')).status, 'handoff');
         handoffs.push(trigger);
       },
@@ -291,7 +324,7 @@ test('standby blocks when the wake cue does not report played', async () => {
   let handedOff = false;
   try {
     assert.equal(await runStandby(paths, {
-      helper: '/fake/helper', maxCycles: 1, handoff: async () => { handedOff = true; },
+      helper: '/fake/helper', maxCycles: 1, handoffSupported: () => macOS('14.2'), handoff: async () => { handedOff = true; },
       runner: async (_binary, args) => {
         if (args[0] === 'clap-doctor') return { code: 0, stdout: JSON.stringify({ type: 'ready', detail: 'microphone=authorized audioInput=true speech=unused' }) + '\n', stderr: '' };
         if (args[0] === 'wake-watch') return { code: 0, stdout: JSON.stringify({ type: 'wake', status: 'clap' }) + '\n', stderr: '' };
@@ -565,6 +598,16 @@ function isRunning(pid: number): boolean {
 }
 
 
+
+
+async function macOS(version: string): Promise<boolean> {
+  return codexVoiceHandoffSupported({
+    runner: async (binary, args) => {
+      assert.deepEqual([binary, ...args], ['/usr/bin/sw_vers', '-productVersion']);
+      return { code: 0, stdout: `${version}\n`, stderr: '' };
+    },
+  });
+}
 
 function handoff(id: string): HandoffRecord {
   return { id, status: 'pending', requestedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString() };
