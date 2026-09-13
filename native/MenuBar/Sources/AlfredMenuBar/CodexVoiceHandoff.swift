@@ -32,7 +32,7 @@ final class CodexVoiceHandoff {
       finish(request, error: "Allow Alfred in System Settings > Privacy & Security > Accessibility, then choose Start listening.")
       return
     }
-    guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.openai.codex") else {
+    guard let url = CodexApplication.installedURL() else {
       finish(request, error: "Codex is not installed. Open Codex once, then choose Start listening.")
       return
     }

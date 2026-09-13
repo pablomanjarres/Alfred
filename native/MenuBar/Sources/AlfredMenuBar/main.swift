@@ -67,8 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   @objc private func allowVoiceControl() { CodexVoiceHandoff.requestPermission(); rebuildMenu() }
 
   @objc private func openCodex() {
-    let candidates = ["com.openai.codex", "com.openai.chatgpt"]
-    guard let url = candidates.compactMap({ NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) }).first else {
+    guard let url = CodexApplication.installedURL() else {
       setError("Could not find Codex. Open it once from Applications."); rebuildMenu(); return
     }
     NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration()) { [weak self] _, error in
