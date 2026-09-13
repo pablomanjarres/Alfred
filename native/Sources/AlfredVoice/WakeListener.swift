@@ -87,17 +87,22 @@ func waitForWake(using keyword: WakeKeywordSpotting, cueBeforeListening: Bool = 
   tapInstalled = true
   defer { stopCapture() }
   // Prepare the model and input graph before the cue, so its end signals readiness.
-  if cueBeforeListening { try playWakeCue(cancelled: { stopping.get() }) }
-  lastAudio.set(ProcessInfo.processInfo.systemUptime)
-  try engine.start()
-  emit("ready", ["status": "wake", "detail": "Double clap or Alfred; local keyword detection; no recordings"])
-  let deadline = Date().addingTimeInterval(120)
-  _ = waitUntil(deadline) {
-    if stopping.get() { return true }
-    if ProcessInfo.processInfo.systemUptime - lastAudio.get() >= 0.75 {
-      failure.set("microphone stopped delivering audio; wake buffers cleared")
+  if cueBeforeListening {
+    do { try playWakeCue(cancelled: { stopping.get() }) }
+    catch { if !stopping.get() { throw error } }
+  }
+  if !stopping.get() {
+    lastAudio.set(ProcessInfo.processInfo.systemUptime)
+    try engine.start()
+    emit("ready", ["status": "wake", "detail": "Double clap or Alfred; local keyword detection; no recordings"])
+    let deadline = Date().addingTimeInterval(120)
+    _ = waitUntil(deadline) {
+      if stopping.get() { return true }
+      if ProcessInfo.processInfo.systemUptime - lastAudio.get() >= 0.75 {
+        failure.set("microphone stopped delivering audio; wake buffers cleared")
+      }
+      return heard.get() != nil || failure.get() != nil || stopping.get()
     }
-    return heard.get() != nil || failure.get() != nil || stopping.get()
   }
   // Release native waveform tails before reporting a trigger or going idle.
   stopCapture()

@@ -5,6 +5,7 @@ import Foundation
 func playWakeCue(cancelled: () -> Bool = { false }) throws {
   let player = try AVAudioPlayer(contentsOf: URL(fileURLWithPath: "/System/Library/Sounds/Tink.aiff"))
   defer { player.stop() }
+  emit("cue", ["status": "starting", "detail": "Playing wake cue before capture starts"])
   guard player.prepareToPlay(), player.play() else {
     throw WakeAudioError(description: "wake cue could not start")
   }
