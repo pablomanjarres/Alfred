@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { runStandby, servicePaths, type StandbyRunOptions } from '../src/standby.ts';
 
+const noopNotifier = async () => {};
+
 const processingDelay = 'wake audio processing exceeded its time limit';
 const inputPause = 'microphone stopped delivering audio; wake buffers cleared';
 
@@ -63,7 +65,7 @@ async function scenario(errors: string[], verify: (result: Result) => Promise<vo
     return event({ type: 'wake', status: 'Alfred', detail: { rawAudio: 'erased' } });
   };
   try {
-    assert.equal(await runStandby(paths, {
+    assert.equal(await runStandby(paths, { notifier: noopNotifier,
       helper: '/fake/helper', maxCycles: 1, recoveryBackoffMs: 10,
       runner, cue: async () => { cues += 1; }, signal: options.signal,
     }), 0);
