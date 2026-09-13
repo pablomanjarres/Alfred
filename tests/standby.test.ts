@@ -134,6 +134,98 @@ writeFileSync(log + '.once', '1');
 });
 
 
+
+test('wake watch recovers once from a transient audio interruption', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
+  const calls: string[][] = [];
+  try {
+    assert.equal(await runStandby(isolatedServicePaths(root), {
+      helper: '/fake/helper', maxCycles: 1, cue: async () => {}, recoveryBackoffMs: 1,
+      runner: async (_binary, args, options) => {
+        calls.push(args);
+        if (args[0] === 'clap-doctor') return { code: 0, stdout: JSON.stringify({ type: 'ready', detail: 'microphone=authorized audioInput=true speech=unused' }) + '\n', stderr: '' };
+        if (args[0] === 'wake-watch' && calls.filter((call) => call[0] === 'wake-watch').length === 1) throw new Error('microphone stopped delivering audio; wake buffers cleared');
+        if (args[0] === 'wake-watch') {
+          options.onLine?.(JSON.stringify({ type: 'ready', detail: 'Waiting for Alfred' }));
+          return { code: 0, stdout: JSON.stringify({ type: 'idle', status: 'wake' }) + '\n', stderr: '' };
+        }
+        throw new Error('unexpected helper command');
+      },
+    }), 0);
+    assert.deepEqual(calls.map((call) => call[0]), ['clap-doctor', 'wake-watch', 'wake-watch']);
+    assert.match(await readFile(join(root, 'standby', 'standby.log'), 'utf8'), /"type":"ready"/);
+    assert.equal(JSON.parse(await readFile(join(root, 'standby', 'state.json'), 'utf8')).status, 'stopped');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('wake watch stops after two transient audio interruption retries', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
+  let wakeCalls = 0;
+  try {
+    assert.equal(await runStandby(isolatedServicePaths(root), {
+      helper: '/fake/helper', maxCycles: 1, cue: async () => {}, recoveryBackoffMs: 1,
+      runner: async (_binary, args) => {
+        if (args[0] === 'clap-doctor') return { code: 0, stdout: JSON.stringify({ type: 'ready', detail: 'microphone=authorized audioInput=true speech=unused' }) + '\n', stderr: '' };
+        if (args[0] === 'wake-watch') { wakeCalls += 1; throw new Error('microphone stopped delivering audio; wake buffers cleared'); }
+        throw new Error('unexpected helper command');
+      },
+    }), 0);
+    assert.equal(wakeCalls, 3);
+    const state = JSON.parse(await readFile(join(root, 'standby', 'state.json'), 'utf8'));
+    assert.equal(state.status, 'blocked');
+    assert.match(state.detail, /microphone stopped delivering audio/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('wake watch cancellation stops a pending audio interruption retry', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
+  const controller = new AbortController();
+  let wakeCalls = 0;
+  try {
+    assert.equal(await runStandby(isolatedServicePaths(root), {
+      helper: '/fake/helper', maxCycles: 1, cue: async () => {}, recoveryBackoffMs: 50, signal: controller.signal,
+      runner: async (_binary, args) => {
+        if (args[0] === 'clap-doctor') return { code: 0, stdout: JSON.stringify({ type: 'ready', detail: 'microphone=authorized audioInput=true speech=unused' }) + '\n', stderr: '' };
+        if (args[0] === 'wake-watch') {
+          wakeCalls += 1;
+          queueMicrotask(() => controller.abort());
+          throw new Error('microphone stopped delivering audio; wake buffers cleared');
+        }
+        throw new Error('unexpected helper command');
+      },
+    }), 0);
+    assert.equal(wakeCalls, 1);
+    assert.equal(JSON.parse(await readFile(join(root, 'standby', 'state.json'), 'utf8')).status, 'stopped');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('wake watch fatal errors are not retried as audio interruption recovery', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
+  let wakeCalls = 0;
+  try {
+    assert.equal(await runStandby(isolatedServicePaths(root), {
+      helper: '/fake/helper', maxCycles: 1, cue: async () => {}, recoveryBackoffMs: 1,
+      runner: async (_binary, args) => {
+        if (args[0] === 'clap-doctor') return { code: 0, stdout: JSON.stringify({ type: 'ready', detail: 'microphone=authorized audioInput=true speech=unused' }) + '\n', stderr: '' };
+        if (args[0] === 'wake-watch') { wakeCalls += 1; throw new Error('native cue failed'); }
+        throw new Error('unexpected helper command');
+      },
+    }), 0);
+    assert.equal(wakeCalls, 1);
+    const state = JSON.parse(await readFile(join(root, 'standby', 'state.json'), 'utf8'));
+    assert.equal(state.status, 'blocked');
+    assert.match(state.detail, /native cue failed/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('wake watch allows a sleep-length pause before timing out', async () => {
   const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
   const calls: { args: string[]; timeoutMs: number }[] = [];
