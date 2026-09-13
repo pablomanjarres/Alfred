@@ -11,6 +11,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private var config: AlfredCLIConfig?
   private var lastState = MenuState(kind: .starting, detail: "Loading Alfred status…", micIndicator: false)
   private var timer: Timer?
+  private var voiceTimer: Timer?
+  private var voiceHandoff: CodexVoiceHandoff?
   private var polling = false
   private var pollGeneration = 0
   private var busyAction: BusyAction?
@@ -19,10 +21,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   func applicationDidFinishLaunching(_ notification: Notification) {
     if NSRunningApplication.runningApplications(withBundleIdentifier: appId).contains(where: { $0.processIdentifier != getpid() }) { NSApp.terminate(nil) }
     config = try? AlfredCLIConfig.load(from: configURL())
+    let stateHome = config?.stateHome.map { URL(fileURLWithPath: $0) }
+      ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".alfred")
+    voiceHandoff = CodexVoiceHandoff(store: VoiceHandoffStore(directory: stateHome.appendingPathComponent("standby"))) { [weak self] in
+      self?.refreshStatus(force: true)
+    }
     statusItem.button?.title = "🎩"
     rebuildMenu()
     refreshStatus(force: true)
     timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.refreshStatus() }
+    voiceTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.voiceHandoff?.poll() }
   }
 
   @objc private func refreshStatus() { refreshStatus(force: false) }
@@ -56,6 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   @objc private func useCurrentOutput() { command(["cue", "output", "current"], timeout: 20, busy: .cueOutput) }
   @objc private func useSpeakersOutput() { command(["cue", "output", "speakers"], timeout: 20, busy: .cueOutput) }
   @objc private func quitUI() { NSApp.terminate(nil) }
+  @objc private func allowVoiceControl() { CodexVoiceHandoff.requestPermission(); rebuildMenu() }
 
   @objc private func openCodex() {
     let candidates = ["com.openai.codex", "com.openai.chatgpt"]
@@ -121,6 +130,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let busy = busyAction != nil
     menu.addItem(actionItem("Start listening", action: #selector(startListener), key: "s", enabled: !busy))
     menu.addItem(actionItem("Stop listening", action: #selector(stopListener), key: "x", enabled: !busy))
+    if !CodexVoiceHandoff.permissionGranted {
+      menu.addItem(actionItem("Enable voice control…", action: #selector(allowVoiceControl), enabled: !busy))
+    }
     menu.addItem(actionItem("Test wake sound", action: #selector(testWakeSound), key: "t", enabled: !busy))
     let output = NSMenuItem(title: "Wake sound output", action: nil, keyEquivalent: "")
     output.isEnabled = !busy
@@ -158,6 +170,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       let process = Process()
       process.executableURL = URL(fileURLWithPath: config.nodePath)
       process.arguments = [config.cliPath] + args
+      if let stateHome = config.stateHome {
+        process.environment = ProcessInfo.processInfo.environment.merging(["ALFRED_HOME": stateHome]) { _, configured in configured }
+      }
       let out = Pipe(), err = Pipe()
       process.standardOutput = out; process.standardError = err
       do { try process.run() } catch { done(.failure(MenuError("Could not start Alfred: \(error.localizedDescription)"))); return }
@@ -248,13 +263,8 @@ enum BusyAction {
   }
 }
 
-@main
-enum AlfredMenuMain {
-  static func main() {
-    let app = NSApplication.shared
-    let delegate = AppDelegate()
-    app.delegate = delegate
-    app.setActivationPolicy(.accessory)
-    app.run()
-  }
-}
+let app = NSApplication.shared
+let delegate = AppDelegate()
+app.delegate = delegate
+app.setActivationPolicy(.accessory)
+app.run()

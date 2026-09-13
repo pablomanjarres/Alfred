@@ -72,7 +72,7 @@ chmodSync(targetExe, 0o755);
 run('/usr/bin/codesign', ['--verify', '--strict', targetApp]);
 run('/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister', ['-f', targetApp]);
 mkdirSync(dirname(configPath), { recursive: true, mode: 0o700 });
-writeFileSync(configPath, JSON.stringify({ nodePath: process.execPath, cliPath }, null, 2) + '\n', { mode: 0o600 });
+writeFileSync(configPath, JSON.stringify({ nodePath: process.execPath, cliPath, stateHome: resolve(process.env.ALFRED_HOME || join(home, '.alfred')) }, null, 2) + '\n', { mode: 0o600 });
 mkdirSync(dirname(plistPath), { recursive: true });
 writeFileSync(plistPath, `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
