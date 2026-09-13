@@ -42,12 +42,11 @@ npm run build:menubar
 npm run install:menubar
 ```
 
-`npm run install:menubar` installs `~/Applications/Alfred.app`. Its menu shows listening status, controls standby, and lets you test the wake sound or choose Mac speakers. Quitting the menu app leaves the listener running.
+`npm run install:menubar` installs `~/Applications/Alfred.app`. Choose **Enable voice control** and allow Alfred in macOS Accessibility settings.
 
-Use Codex desktop's voice button for spoken orders. The optional macOS helper can
-transcribe an existing audio file, and `alfred standby start` runs login wake
-standby for double clap or the local “Alfred” keyword: it does not record,
-transcribe, or send standby audio to Codex.
+Say “Alfred” or double clap. After the cue, Codex voice opens in your current task.
+Give your order there. End the call, then choose **Start listening** in Alfred's
+menu to re-arm it. Standby audio is never recorded or sent to Codex.
 
 - Local commands use full access by default. Set `--permission read-only` to limit it.
 - Double clap and “Alfred” work while the computer is awake. Waking from system sleep needs an external sensor.

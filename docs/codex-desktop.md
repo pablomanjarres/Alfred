@@ -28,5 +28,19 @@ Run `alfred doctor` to check the ChatGPT login, enabled MCP server names, option
 voice helper, and installed pet package. It does not reveal credentials or ask
 for microphone permission.
 
+## Wake into voice
+
+With the menu app installed and **Enable voice control** allowed, a double clap or
+“Alfred” opens live voice in the current Codex task. Use `$alfred` in that task for
+the butler behavior. The task keeps its own tools, context, and access settings.
+
+Alfred stops its microphone before sending **Control-Shift-V** to Codex. It sends
+the shortcut once and checks that Codex has opened input. End the voice call, then
+choose **Start listening** in Alfred to re-arm wake detection. Microphone inactivity
+alone does not prove a call ended, so Alfred does not use it to restart standby.
+
+This uses the documented [voice control](https://learn.chatgpt.com/docs/reference/commands)
+and [Codex voice chat](https://learn.chatgpt.com/docs/features/voice).
+
 References: [Codex CLI](https://developers.openai.com/codex/cli/) and
 [official custom pet contract](https://github.com/openai/skills/blob/main/skills/.curated/hatch-pet/references/codex-pet-contract.md).
