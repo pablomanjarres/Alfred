@@ -131,12 +131,35 @@ func detectorSelftest() -> Bool {
     clap.push(rms: 0.02, peak: 0.05, time: 0.30),
     clap.push(rms: 0.31, peak: 0.90, time: 0.58)
   ].contains(true)
+
+  let moderate = ClapDetector()
+  let moderateHit = [
+    moderate.push(rms: 0.01, peak: 0.03, time: 0.00),
+    moderate.push(rms: 0.12, peak: 0.82, time: 0.10),
+    moderate.push(rms: 0.02, peak: 0.04, time: 0.20),
+    moderate.push(rms: 0.13, peak: 0.86, time: 0.50)
+  ].contains(true)
+
+  let single = ClapDetector()
+  let singleRejected = ![
+    single.push(rms: 0.01, peak: 0.03, time: 0.00),
+    single.push(rms: 0.12, peak: 0.82, time: 0.10),
+    single.push(rms: 0.02, peak: 0.04, time: 0.20)
+  ].contains(true)
+
   let speech = ClapDetector()
-  var rejected = true
+  var speechRejected = true
   for i in 0..<12 {
-    rejected = rejected && !speech.push(rms: 0.24, peak: 0.64, time: Double(i) * 0.07)
+    speechRejected = speechRejected && !speech.push(rms: 0.24, peak: 0.64, time: Double(i) * 0.07)
   }
-  return hit && rejected
+
+  let sustained = ClapDetector()
+  var sustainedRejected = true
+  for i in 0..<8 {
+    sustainedRejected = sustainedRejected && !sustained.push(rms: 0.12, peak: 0.64, time: Double(i) * 0.10)
+  }
+
+  return hit && moderateHit && singleRejected && speechRejected && sustainedRejected
 }
 func selftest() {
   let callbackRan = Locked(false)
