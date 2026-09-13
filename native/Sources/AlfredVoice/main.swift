@@ -281,9 +281,11 @@ func waitForClap() -> Bool {
   func proof() -> [String: Any] {
     ["frames": frameCount.get(), "lastFrameAt": lastFrameAt.get(), "maxBufferSeconds": maxBufferSeconds.get(), "maxCapacitySeconds": maxCapacitySeconds.get(), "speech": "unused"]
   }
+  let tapFormat = input.outputFormat(forBus: 0)
+  guard tapFormat.commonFormat == .pcmFormatFloat32 && !tapFormat.isInterleaved else { fail("unsupported clap audio format") }
   emit("ready", ["status": "ready", "detail": "speech=unused audio=not-retained maxBufferSeconds<=1"])
   emit("listening", ["status": "clap"])
-  input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { buffer, _ in
+  input.installTap(onBus: 0, bufferSize: 1024, format: tapFormat) { buffer, _ in
     let features = clapFeaturesAndWipe(buffer)
     frameCount.set(frameCount.get() + Int(buffer.frameLength))
     maxBufferSeconds.set(max(maxBufferSeconds.get(), features.frameDuration))
