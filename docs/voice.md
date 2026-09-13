@@ -33,6 +33,10 @@ Exports:
 
 `mode: 'listen'` records one spoken command. `mode: 'file'` transcribes one audio file and requires `file`. `mode: 'clap'` waits for a deliberate double clap, wakes the display with `caffeinate -u -t 3`, records one spoken command, emits one transcript, and exits.
 
+Run `alfred clap --loop` to stay on call. It rearms after each two-minute idle window and completed order. Ctrl-C, a permission failure, or another real error stops it. The microphone closes between windows and while Alfred acts or speaks.
+
+Live capture lasts up to 12 seconds, then allows five seconds for Apple Speech to finish. Only a final transcript becomes an order; incomplete results are rejected.
+
 ## Permissions
 
 The first real listening action may trigger macOS prompts for Microphone and Speech Recognition. `voiceStatus()` and `AlfredVoice doctor` do not prompt; they only report the current state. `voiceStatus()` returns `available: false` until Speech Recognition and Microphone are authorized.
@@ -61,8 +65,8 @@ The native helper writes UTF-8 JSON lines to stdout:
 {"type":"error","message":"microphone permission was not granted"}
 ```
 
-Only these event types are part of the interface: `ready`, `listening`, `transcript`, and `error`.
+The event types are `ready`, `listening`, `transcript`, `error`, and `idle`. An `idle` event means the clap window ended without a double clap; it contains no order.
 
 ## Verification Limits
 
-The no-microphone checks compile the helper, run the clap detector self-test, and run the non-prompting doctor command. They do not prove real microphone transcription quality; that requires speaking into the Mac after granting permissions.
+The no-microphone checks compile the helper, test clap detection and main-queue callback delivery, and run the non-prompting doctor command. They do not prove real microphone transcription quality; that requires speaking into the Mac after granting permissions.
