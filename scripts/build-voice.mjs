@@ -51,6 +51,7 @@ for (const file of readdirSync(dependencies).filter((file) => file.startsWith('L
 run(join(macos, 'AlfredVoice'), ['selftest']);
 run(join(macos, 'AlfredVoice'), ['clap-selftest']);
 run(join(macos, 'AlfredVoice'), ['wake-audio-selftest']);
+run(join(macos, 'AlfredVoice'), ['cue-selftest']);
 run(process.execPath, [join(root, 'scripts/check-wake.mjs')]);
 run(join(macos, 'AlfredVoice'), ['doctor'], { allowFailure: true });
 

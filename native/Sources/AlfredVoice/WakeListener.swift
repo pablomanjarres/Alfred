@@ -9,7 +9,7 @@ protocol WakeKeywordSpotting: AnyObject {
   func close()
 }
 
-func waitForWake(using keyword: WakeKeywordSpotting, cueBeforeListening: Bool = false) throws -> Bool {
+func waitForWake(using keyword: WakeKeywordSpotting, cueBeforeListening: Bool = false, cueOutput: CueOutputMode = .current) throws -> Bool {
   defer { keyword.close() }
   authorizeMic()
   let engine = AVAudioEngine()
@@ -88,7 +88,7 @@ func waitForWake(using keyword: WakeKeywordSpotting, cueBeforeListening: Bool = 
   defer { stopCapture() }
   // Prepare the model and input graph before the cue, so its end signals readiness.
   if cueBeforeListening {
-    do { try playWakeCue(cancelled: { stopping.get() }) }
+    do { try playWakeCue(output: cueOutput, cancelled: { stopping.get() }) }
     catch { if !stopping.get() { throw error } }
   }
   if !stopping.get() {
