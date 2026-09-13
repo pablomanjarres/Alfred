@@ -37,9 +37,10 @@ alfred standby start
 alfred off
 ```
 
-Say “Alfred” or double clap. After the cue, give your order in his dedicated Codex
-task. Say “Goodbye, Alfred” to end the call and resume wake listening. Say “Alfred,
-switch off” to stop both. Standby audio is never recorded or sent to Codex.
+Say “Alfred” or double clap to open his Codex task. Codex supplies the live speaking
+voice; see the [personality limits](docs/voice.md#personality-and-voice).
+Use `alfred voice end` to end the call and resume wake listening, or `alfred off`
+to stop both. Standby audio is never recorded or sent to Codex.
 
 - Local commands use full access by default; read-only mode is available.
 - Double clap and “Alfred” work while the computer is awake. Waking from system sleep needs an external sensor.
