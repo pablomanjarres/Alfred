@@ -1,6 +1,6 @@
 import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { isAbsolute, join } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import type { Config } from './config.js';
 import { stateDirectory } from './config.js';
 import { runCodex } from './codex.js';
@@ -19,8 +19,8 @@ export async function readCompanion(home = stateDirectory()): Promise<Companion 
   return saved;
 }
 
-export async function prepareCompanion(config: Config, options: { home?: string; create?: typeof runCodex; signal?: AbortSignal } = {}): Promise<Companion> {
-  const home = options.home ?? stateDirectory();
+export async function prepareCompanion(config: Config, options: { home?: string; executable?: string; create?: typeof runCodex; signal?: AbortSignal } = {}): Promise<Companion> {
+  const home = resolve(options.home ?? stateDirectory());
   return withLock(home, async () => {
     const existing = await readCompanion(home);
     if (existing) return existing;
@@ -28,7 +28,8 @@ export async function prepareCompanion(config: Config, options: { home?: string;
     await mkdir(cwd, { recursive: true, mode: 0o700 });
     await chmod(cwd, 0o700);
     const template = await readFile(new URL('../assets/companion/instructions.md', import.meta.url), 'utf8');
-    const command = `'${join(homedir(), '.local/bin/alfred').replaceAll("'", "'\\''")}'`;
+    const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+    const command = `ALFRED_HOME=${quote(home)} ${quote(options.executable ?? join(homedir(), '.local/bin/alfred'))}`;
     try { await writeFile(join(cwd, 'AGENTS.md'), template.replaceAll('{{ALFRED_COMMAND}}', command), { flag: 'wx', mode: 0o600 }); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
     const result = await (options.create ?? runCodex)(
