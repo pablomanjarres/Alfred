@@ -101,8 +101,17 @@ export async function runStandby(paths = servicePaths(), options: StandbyRunOpti
         await writeState(paths, 'starting', 'Preparing local clap and Alfred wake detection.');
         const trigger = await runWakeWatchWithRetry(paths, helper, runner, controller.signal);
         if (trigger) {
+          await logEvent(paths, { type: 'wake', status: trigger, detail: 'microphone stopped before cue' });
           await writeState(paths, 'starting', `${trigger} heard; microphone stopped for the cue.`);
-          await (options.cue ?? playCue)();
+          try {
+            await (options.cue ?? (() => playCue(runner)))();
+            await logEvent(paths, { type: 'cue', status: 'played', detail: 'system cue completed' });
+            await writeState(paths, 'running', `${trigger} heard; cue played; re-arming standby.`);
+          } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error);
+            await logEvent(paths, { type: 'cue', status: 'failed', detail });
+            throw new Error(`cue failed: ${detail}`);
+          }
         }
       } catch (error) {
         if (controller.signal.aborted) break;
@@ -174,8 +183,11 @@ async function runWakeWatch(paths: StandbyPaths, helper: string, runner: Runner,
       onLine: (line) => {
         const event = parseEvents(line)[0];
         const state = event?.type === 'ready' ? 'running' : event?.type === 'paused' ? 'paused' : undefined;
-        if (state) updates = updates.then(() => writeState(paths, state, detailText(event?.detail)))
-          .catch((error) => { updateError = error; });
+        if (state) updates = updates.then(async () => {
+          const detail = detailText(event?.detail);
+          await writeState(paths, state, detail);
+          await logEvent(paths, { type: event.type, status: event.status ?? state, detail });
+        }).catch((error) => { updateError = error; });
       },
     });
   } finally { await updates; }
@@ -204,6 +216,9 @@ async function appendLog(paths: StandbyPaths, chunk: string): Promise<void> {
   await appendFile(paths.log, chunk, { mode: 0o600 });
   if ((await stat(paths.log)).size > LOG_LIMIT) await writeFile(paths.log, (await readFile(paths.log, 'utf8')).slice(-LOG_LIMIT), { mode: 0o600 });
 }
+async function logEvent(paths: StandbyPaths, event: { type: string; status?: string; detail?: string }): Promise<void> {
+  await appendLog(paths, JSON.stringify({ ...event, at: new Date().toISOString() }) + '\n');
+}
 async function alert(paths: StandbyPaths, message: string): Promise<void> {
   const state = await readState(paths);
   const last = state?.lastAlertAt ? Date.parse(state.lastAlertAt) : 0;
@@ -211,8 +226,11 @@ async function alert(paths: StandbyPaths, message: string): Promise<void> {
   await runProcess('/usr/bin/osascript', ['-e', `display notification ${JSON.stringify(message)} with title "Alfred"`], { timeoutMs: 10_000 }).catch(() => ({ code: 1, stdout: '', stderr: '' }));
   if (state) await writeFile(paths.state, JSON.stringify({ ...state, lastAlertAt: new Date().toISOString() }) + '\n', { mode: 0o600 });
 }
-async function playCue(): Promise<void> { await runProcess('/usr/bin/afplay', ['/System/Library/Sounds/Ping.aiff'], { timeoutMs: 3_000 }).catch(() => ({ code: 1, stdout: '', stderr: '' })); }
-function detailText(value: unknown): string { return typeof value === 'string' ? value : JSON.stringify(value); }
+export async function playCue(runner: Runner = runProcess): Promise<void> {
+  const result = await runner('/usr/bin/afplay', ['/System/Library/Sounds/Ping.aiff'], { timeoutMs: 10_000 });
+  if (result.code !== 0) throw new Error(result.stderr || `cue exited with code ${result.code}`);
+}
+function detailText(value: unknown): string { return typeof value === 'string' ? value : value === undefined ? '' : JSON.stringify(value); }
 function sleepTimeout(error: unknown): boolean { return error instanceof Error && /timed out after 86400000 ms|timeout/i.test(error.message); }
 function parseEvents(output: string): Event[] { return output.split('\n').flatMap((line) => { try { return line.trim() ? [JSON.parse(line) as Event] : []; } catch { return []; } }); }
 function domain(): string { return `gui/${process.getuid?.() ?? 0}`; }
