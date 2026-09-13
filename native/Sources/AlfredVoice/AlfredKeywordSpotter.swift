@@ -84,6 +84,7 @@ final class AlfredKeywordSpotter: WakeKeywordSpotting {
       if keyword == "ALFRED" { return true }
       if !keyword.isEmpty {
         SherpaOnnxResetKeywordStream(spotter, stream)
+        try Self.prime(spotter, stream: stream)
         return false
       }
     }
