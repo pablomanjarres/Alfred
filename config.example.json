@@ -1,0 +1,8 @@
+{
+  "codex": "codex",
+  "cwd": "~/Projects/alfred",
+  "permission": "full",
+  "timeoutMs": 600000,
+  "locale": "en-US",
+  "speak": true
+}

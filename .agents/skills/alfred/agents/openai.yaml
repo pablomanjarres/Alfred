@@ -1,0 +1,4 @@
+interface:
+  display_name: "Alfred"
+  short_description: "A personal butler for your connected tools"
+  default_prompt: "Use $alfred to handle my next request through Cortex and my connected tools."
