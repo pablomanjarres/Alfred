@@ -48,7 +48,7 @@ Say “Alfred” or double clap. After the cue, Codex voice opens in your curren
 Give your order there. End the call, then choose **Start listening** in Alfred's
 menu to re-arm it. Standby audio is never recorded or sent to Codex.
 
-- Local commands use full access by default. Set `--permission read-only` to limit it.
+- Local commands use full access by default; read-only mode is available.
 - Double clap and “Alfred” work while the computer is awake. Waking from system sleep needs an external sensor.
 - Your orders and answers stay in `~/.alfred/`. Codex plan limits still apply.
 
