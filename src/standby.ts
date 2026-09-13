@@ -12,6 +12,7 @@ export const LABEL = 'com.pablo.alfred.standby';
 const LOG_LIMIT = 128 * 1024;
 const WAKE_WATCH_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const AUDIO_INTERRUPTION = 'microphone stopped delivering audio; wake buffers cleared';
+const AUDIO_PROCESSING_TIMEOUT = 'wake audio processing exceeded its time limit';
 const AUDIO_INTERRUPTION_RETRIES = 2;
 
 type Event = { type: 'ready' | 'listening' | 'idle' | 'clap' | 'wake' | 'paused' | 'cue' | 'error'; status?: string; detail?: unknown; message?: string };
@@ -237,9 +238,10 @@ async function runWakeWatchWithRetry(paths: StandbyPaths, helper: string, runner
     try {
       return await runWakeWatch(paths, helper, runner, signal, playCue, output);
     } catch (error) {
-      if (audioInterruption(error) && audioRetries < AUDIO_INTERRUPTION_RETRIES) {
+      const recoveryDetail = wakeAudioRecoveryDetail(error);
+      if (recoveryDetail && audioRetries < AUDIO_INTERRUPTION_RETRIES) {
         audioRetries += 1;
-        await writeState(paths, 'starting', `Microphone input paused; recovering wake detector (${audioRetries}/${AUDIO_INTERRUPTION_RETRIES}).`);
+        await writeState(paths, 'starting', `${recoveryDetail} (${audioRetries}/${AUDIO_INTERRUPTION_RETRIES}).`);
         await delay(recoveryBackoffMs, undefined, { signal });
         continue;
       }
@@ -321,7 +323,13 @@ async function alert(paths: StandbyPaths, message: string): Promise<void> {
 }
 function detailText(value: unknown): string { return typeof value === 'string' ? value : value === undefined ? '' : JSON.stringify(value); }
 function sleepTimeout(error: unknown): boolean { return error instanceof Error && /timed out after 86400000 ms|timeout/i.test(error.message); }
-function audioInterruption(error: unknown): boolean { return error instanceof Error && error.message === AUDIO_INTERRUPTION; }
+function wakeAudioRecoveryDetail(error: unknown): string | undefined {
+  if (!(error instanceof Error)) return undefined;
+  // Native emits these after it stops capture and wipes the current audio buffers; retrying only restarts the helper.
+  if (error.message === AUDIO_INTERRUPTION) return 'Microphone input paused; recovering wake detector';
+  if (error.message === AUDIO_PROCESSING_TIMEOUT) return 'Wake audio processing timed out; recovering wake detector';
+  return undefined;
+}
 function parseEvents(output: string): Event[] { return output.split('\n').flatMap((line) => { try { return line.trim() ? [JSON.parse(line) as Event] : []; } catch { return []; } }); }
 function domain(): string { return `gui/${process.getuid?.() ?? 0}`; }
 function serviceTarget(): string { return `${domain()}/${LABEL}`; }
