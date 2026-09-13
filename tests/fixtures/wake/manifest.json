@@ -1,7 +1,7 @@
 {
   "version": 1,
   "generatedAt": "2026-09-13T05:52:47.442Z",
-  "provenance": "Generated on Pablo Mac with /usr/bin/say from scripts/check-wake.mjs cases; no microphone input. The two Alfredo. Alfred positives are deterministic two-segment say audio with 0.7s silence before the second wake word.",
+  "provenance": "Generated on Pablo Mac with /usr/bin/say from scripts/check-wake.mjs cases; no microphone input.",
   "archive": "generated-voices.tar.gz",
   "cases": [
     {
@@ -154,8 +154,8 @@
       "phrase": "Alfredo. Alfred",
       "expected": true,
       "format": "aiff-generated-by-say",
-      "sha256": "1d6f88615bbe01d25e76fce1893b013518244a2e11c0f0f6b3c5c5f66be6d0fc",
-      "bytes": 68730
+      "sha256": "ab7985cb6b41f5b2b3e14683d90151deab6e6a9a1d4f526b7cbf7da56b4c14b6",
+      "bytes": 76430
     },
     {
       "name": "17.aiff",
@@ -163,10 +163,10 @@
       "phrase": "Alfredo. Alfred",
       "expected": true,
       "format": "aiff-generated-by-say",
-      "sha256": "29a2f3f64ed7e3922c9b4792b8adc1448a53443b64fc62ede183c7d95b3756cd",
-      "bytes": 60936
+      "sha256": "c85773890ca1626ccc15ef3894be0536c908982d26c6c5d68f9a43caa05d8a83",
+      "bytes": 65424
     }
   ],
-  "archiveSha256": "cc07eeeb69755756c97f89a4adc0b60679d49941878ee05568998e372561b186",
-  "archiveBytes": 526928
+  "archiveSha256": "292cbf07c809a07bd4649295ab57a706568466fc1bc2a15a2e37e8ea99410ff9",
+  "archiveBytes": 559586
 }
