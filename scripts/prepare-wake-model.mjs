@@ -36,7 +36,7 @@ for (const file of [
   'decoder-epoch-12-avg-2-chunk-16-left-64.onnx',
   'joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx', 'tokens.txt'
 ]) cpSync(join(extracted, file), join(output, file));
-cpSync(join(root, 'native/Resources/alfred-keywords.txt'), join(output, 'keywords.txt'));
+cpSync(join(root, 'native/Resources/alfred-keywords.txt'), join(output, 'alfred-keywords.txt'));
 writeFileSync(join(output, 'source.json'), JSON.stringify({ name, sha256: checksum }) + '\n');
 rmSync(extracted, { recursive: true, force: true });
 console.log('Prepared the pinned local Alfred wake model.');

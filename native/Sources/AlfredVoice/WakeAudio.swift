@@ -71,7 +71,11 @@ func consumeWakeAudio(
       }
       output[index] = Float(weighted / ((right - left) * Double(channels)))
     }
-    try accept(UnsafeBufferPointer(output))
+    for offset in stride(from: 0, to: output.count, by: 1_600) {
+      let chunk = UnsafeBufferPointer(start: output.baseAddress!.advanced(by: offset),
+                                      count: min(1_600, output.count - offset))
+      try accept(chunk)
+    }
   }
   return WakeAudioProof(
     rms: sqrt(squareSum / Float(frames * channels)), peak: peak,

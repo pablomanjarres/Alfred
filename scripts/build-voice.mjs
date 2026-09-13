@@ -28,6 +28,10 @@ if (process.platform !== 'darwin') {
   process.exit(1);
 }
 
+run(process.execPath, [join(root, 'scripts/build-keyword.mjs')]);
+run(process.execPath, [join(root, 'scripts/prepare-wake-model.mjs')]);
+// SwiftPM does not track changes inside libraries supplied through -l flags.
+rmSync(join(nativeRoot, '.build/release/AlfredVoice'), { force: true });
 run('/usr/bin/swift', ['build', '-c', 'release', '--package-path', nativeRoot]);
 
 rmSync(appRoot, { force: true, recursive: true });
@@ -35,9 +39,12 @@ mkdirSync(macos, { recursive: true });
 mkdirSync(resources, { recursive: true });
 cpSync(join(nativeRoot, '.build', 'release', 'AlfredVoice'), join(macos, 'AlfredVoice'));
 cpSync(join(nativeRoot, 'Resources', 'Info.plist'), join(contents, 'Info.plist'));
+cpSync(join(nativeRoot, '.build/wake-model/ready'),
+  join(resources, 'sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01'), { recursive: true });
 
 run(join(macos, 'AlfredVoice'), ['selftest']);
 run(join(macos, 'AlfredVoice'), ['clap-selftest']);
+run(join(macos, 'AlfredVoice'), ['wake-audio-selftest']);
 run(join(macos, 'AlfredVoice'), ['doctor'], { allowFailure: true });
 
 console.log(`Built ${appRoot}`);
