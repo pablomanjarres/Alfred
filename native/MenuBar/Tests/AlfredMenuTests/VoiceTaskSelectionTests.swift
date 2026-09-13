@@ -25,6 +25,7 @@ func runVoiceTaskSelectionTests() {
   expect(VoiceTaskSelection.canRestoreProbeClipboard(copiedLink: previousLink, clipboardChanged: true, appIsFrontmost: true, clipboardUnchangedSinceProbe: true), "fresh wrong-task probe links can be restored before refusing voice dispatch")
   expect(!VoiceTaskSelection.canRestoreProbeClipboard(copiedLink: "notes", clipboardChanged: true, appIsFrontmost: true, clipboardUnchangedSinceProbe: true), "unrelated clipboard changes are not treated as restorable probe output")
   expect(!VoiceTaskSelection.canRestoreProbeClipboard(copiedLink: previousLink, clipboardChanged: true, appIsFrontmost: true, clipboardUnchangedSinceProbe: false), "wrong-task probe links cannot overwrite concurrent clipboard changes")
+  expect(!VoiceTaskSelection.canRestoreProbeClipboard(copiedLink: previousLink, clipboardChanged: true, appIsFrontmost: false, clipboardUnchangedSinceProbe: true), "a task link copied after focus leaves Codex must not restore the old clipboard")
   func outcome(_ link: String?, changed: Bool = true, frontmost: Bool = true, expired: Bool = false, current: Bool = true) -> VoiceTaskProbeOutcome {
     VoiceTaskSelection.probeOutcome(threadId: target, copiedLink: link, clipboardChanged: changed,
                                     appIsFrontmost: frontmost, expired: expired, requestIsCurrent: current)
