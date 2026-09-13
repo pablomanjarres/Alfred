@@ -40,39 +40,6 @@ local CLI adds saved voice messages, spoken replies, and double-clap activation.
   existing Codex configuration. Alfred adds 0 duplicate personal-data stores or
   new public command endpoints.
 
-## How it works
-
-```text
-Codex desktop
-  voice button or composer -> Alfred skill -> existing tools -> checked result
-  custom Alfred pet        -> Codex activity animations
-
-Optional local CLI
-  typed order / microphone / audio file
-    -> one order at a time -> Codex CLI -> Cortex and other configured tools
-    -> private receipt     -> terminal answer / optional spoken reply
-```
-
-Alfred uses the tools and permissions available to the current Codex task. The pet
-is his visual presence; its selection does not change task permissions. The local
-runner uses the configured access mode and the same account-backed execution path.
-
-## What's inside
-
-| Path | Purpose |
-| --- | --- |
-| `.agents/skills/alfred/` | Alfred's manner and tool-routing guidance |
-| `assets/pet/` | Custom Codex pet package and visual preview |
-| `src/` | Command runner, configuration, voice adapter, and private history |
-| `native/` | macOS Speech and AVAudioEngine helper |
-| `scripts/` | Local installation and native build |
-| `tests/` | Process, configuration, history, and voice checks |
-| `docs/` | Architecture, voice setup, and desktop integration |
-
-## Tech stack
-
-TypeScript · Node.js 22+ · Swift · Apple Speech · AVAudioEngine · Codex CLI · npm
-
 ## Getting started
 
 Install [Codex](https://developers.openai.com/codex/cli/) and sign in with your
