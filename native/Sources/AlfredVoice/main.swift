@@ -17,6 +17,19 @@ func fail(_ message: String, _ code: Int32 = 1) -> Never {
   emit("error", ["message": message])
   exit(code)
 }
+final class Locked<Value> {
+  private let lock = NSLock()
+  private var value: Value
+  init(_ value: Value) { self.value = value }
+  func get() -> Value { lock.lock(); defer { lock.unlock() }; return value }
+  func set(_ value: Value) { lock.lock(); self.value = value; lock.unlock() }
+}
+func waitUntil(_ deadline: Date, _ done: () -> Bool) -> Bool {
+  while !done() && Date() < deadline {
+    RunLoop.current.run(mode: .default, before: min(Date().addingTimeInterval(0.02), deadline))
+  }
+  return done()
+}
 func parseOptions() -> Options {
   var options = Options()
   let args = Array(CommandLine.arguments.dropFirst())
@@ -77,24 +90,24 @@ func authName(_ status: AVAuthorizationStatus) -> String {
   }
 }
 func authorizeSpeech() {
-  let sema = DispatchSemaphore(value: 0)
-  var allowed = false
+  let completed = Locked(false)
+  let allowed = Locked(false)
   SFSpeechRecognizer.requestAuthorization { status in
-    allowed = status == .authorized
-    sema.signal()
+    allowed.set(status == .authorized)
+    completed.set(true)
   }
-  sema.wait()
-  if !allowed { fail("speech recognition permission was not granted") }
+  if !waitUntil(Date().addingTimeInterval(60), { completed.get() }) { fail("speech authorization timed out") }
+  if !allowed.get() { fail("speech recognition permission was not granted") }
 }
 func authorizeMic() {
-  let sema = DispatchSemaphore(value: 0)
-  var allowed = false
+  let completed = Locked(false)
+  let allowed = Locked(false)
   AVCaptureDevice.requestAccess(for: .audio) { granted in
-    allowed = granted
-    sema.signal()
+    allowed.set(granted)
+    completed.set(true)
   }
-  sema.wait()
-  if !allowed { fail("microphone permission was not granted") }
+  if !waitUntil(Date().addingTimeInterval(60), { completed.get() }) { fail("microphone authorization timed out") }
+  if !allowed.get() { fail("microphone permission was not granted") }
 }
 final class ClapDetector {
   private var lastClap = -10.0
@@ -123,26 +136,36 @@ func selftest() {
   for i in 0..<12 {
     rejected = rejected && !speech.push(rms: 0.24, peak: 0.64, time: Double(i) * 0.07)
   }
-  if hit && rejected { emit("ready", ["status": "selftest", "detail": "clap detector ok"]) }
+  let callbackRan = Locked(false)
+  DispatchQueue.main.async {
+    callbackRan.set(true)
+  }
+  let mainCallbackRuns = waitUntil(Date().addingTimeInterval(0.5), { callbackRan.get() })
+  if hit && rejected && mainCallbackRuns { emit("ready", ["status": "selftest", "detail": "clap detector ok"]) }
   else { fail("clap detector selftest failed") }
 }
 func transcribeFile(_ path: String, _ locale: String) {
   authorizeSpeech()
   let request = SFSpeechURLRecognitionRequest(url: URL(fileURLWithPath: path))
   request.requiresOnDeviceRecognition = true
-  let sema = DispatchSemaphore(value: 0)
-  var output = ""
-  var failure: String?
+  let done = Locked(false)
+  let output = Locked("")
+  let failure = Locked<String?>(nil)
+  let speechRecognizer = recognizer(locale)
   emit("ready", ["status": "ready"])
-  recognizer(locale).recognitionTask(with: request) { result, error in
-    if let result { output = result.bestTranscription.formattedString }
-    if let error { failure = error.localizedDescription; sema.signal() }
-    if result?.isFinal == true { sema.signal() }
+  let task = speechRecognizer.recognitionTask(with: request) { result, error in
+    if result?.isFinal == true {
+      output.set(result?.bestTranscription.formattedString ?? "")
+      done.set(true)
+    }
+    if let error { failure.set(error.localizedDescription); done.set(true) }
   }
-  _ = sema.wait(timeout: .now() + 30)
-  if let failure { fail(failure) }
-  if output.isEmpty { fail("no transcript produced") }
-  emit("transcript", ["text": output])
+  withExtendedLifetime((speechRecognizer, task)) {
+    _ = waitUntil(Date().addingTimeInterval(30), { done.get() })
+  }
+  if let failure = failure.get() { fail(failure) }
+  if output.get().isEmpty { fail("no final transcript produced") }
+  emit("transcript", ["text": output.get()])
 }
 func listenOnce(_ locale: String) {
   authorizeSpeech()
@@ -152,13 +175,16 @@ func listenOnce(_ locale: String) {
   let request = SFSpeechAudioBufferRecognitionRequest()
   request.requiresOnDeviceRecognition = true
   request.shouldReportPartialResults = true
-  var best = ""
-  var failure: String?
-  let sema = DispatchSemaphore(value: 0)
-  recognizer(locale).recognitionTask(with: request) { result, error in
-    if let result { best = result.bestTranscription.formattedString }
-    if let error { failure = error.localizedDescription; sema.signal() }
-    if result?.isFinal == true { sema.signal() }
+  let done = Locked(false)
+  let finalText = Locked("")
+  let failure = Locked<String?>(nil)
+  let speechRecognizer = recognizer(locale)
+  let task = speechRecognizer.recognitionTask(with: request) { result, error in
+    if result?.isFinal == true {
+      finalText.set(result?.bestTranscription.formattedString ?? "")
+      done.set(true)
+    }
+    if let error { failure.set(error.localizedDescription); done.set(true) }
   }
   input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { buffer, _ in
     request.append(buffer)
@@ -166,20 +192,23 @@ func listenOnce(_ locale: String) {
   do { try engine.start() } catch { fail("audio engine could not start: \(error.localizedDescription)") }
   emit("ready", ["status": "ready"])
   emit("listening", ["status": "listening"])
-  _ = sema.wait(timeout: .now() + 12)
+  _ = waitUntil(Date().addingTimeInterval(12), { done.get() })
   engine.stop()
   input.removeTap(onBus: 0)
   request.endAudio()
-  if let failure, best.isEmpty { fail(failure) }
-  if best.isEmpty { fail("no transcript produced") }
-  emit("transcript", ["text": best])
+  withExtendedLifetime((speechRecognizer, task)) {
+    _ = waitUntil(Date().addingTimeInterval(5), { done.get() })
+  }
+  if let failure = failure.get(), finalText.get().isEmpty { fail(failure) }
+  if finalText.get().isEmpty { fail("no final transcript produced") }
+  emit("transcript", ["text": finalText.get()])
 }
 func waitForClap() {
   authorizeMic()
   let engine = AVAudioEngine()
   let input = engine.inputNode
   let detector = ClapDetector()
-  let sema = DispatchSemaphore(value: 0)
+  let heard = Locked(false)
   let start = Date()
   emit("ready", ["status": "ready"])
   emit("listening", ["status": "clap"])
@@ -194,10 +223,10 @@ func waitForClap() {
       sum += sample * sample
     }
     let rms = sqrt(sum / Float(max(count, 1)))
-    if detector.push(rms: rms, peak: peak, time: Date().timeIntervalSince(start)) { sema.signal() }
+    if detector.push(rms: rms, peak: peak, time: Date().timeIntervalSince(start)) { heard.set(true) }
   }
   do { try engine.start() } catch { fail("audio engine could not start: \(error.localizedDescription)") }
-  if sema.wait(timeout: .now() + 120) == .timedOut { fail("double clap was not heard") }
+  if !waitUntil(Date().addingTimeInterval(120), { heard.get() }) { fail("double clap was not heard") }
   engine.stop()
   input.removeTap(onBus: 0)
   _ = Process.launchedProcess(launchPath: "/usr/bin/caffeinate", arguments: ["-u", "-t", "3"])
