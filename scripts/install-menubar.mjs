@@ -13,17 +13,38 @@ const targetApp = join(home, 'Applications', 'Alfred.app');
 const targetExe = join(targetApp, 'Contents', 'MacOS', 'AlfredMenuBar');
 const configPath = join(home, 'Library', 'Application Support', 'Alfred', 'MenuBar', 'config.json');
 const plistPath = join(home, 'Library', 'LaunchAgents', `${label}.plist`);
+const domain = `gui/${process.getuid()}`;
+const service = `${domain}/${label}`;
 const cliPath = resolve(process.env.ALFRED_CLI_PATH || join(root, 'dist', 'cli.js'));
 
-function run(command, args, allowFailure = false) {
-  const result = spawnSync(command, args, { stdio: 'inherit', shell: false });
-  if (!allowFailure && result.status !== 0) process.exit(result.status ?? 1);
+function sleep(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
+function run(command, args, options = {}) {
+  const result = spawnSync(command, args, { encoding: 'utf8', shell: false });
+  if (!options.quiet && result.stdout) process.stdout.write(result.stdout);
+  if (!options.quiet && result.stderr) process.stderr.write(result.stderr);
+  if (!options.allowFailure && result.status !== 0) process.exit(result.status ?? 1);
   return result;
 }
+function launchctl(args, options = {}) { return run('/bin/launchctl', args, options); }
 function xml(value) { return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;'); }
+function servicePid() {
+  const result = launchctl(['print', service], { allowFailure: true, quiet: true });
+  if (result.status !== 0) return undefined;
+  return Number(result.stdout.match(/\bpid\s*=\s*(\d+)/)?.[1]);
+}
+function waitUnloaded() {
+  for (let i = 0; i < 30; i += 1) { if (!servicePid()) return; sleep(100); }
+}
+function waitRunning() {
+  for (let i = 0; i < 50; i += 1) { const pid = servicePid(); if (pid) return pid; sleep(100); }
+  console.error(`Alfred menu bar did not report a running launchd pid for ${service}.`);
+  process.exit(1);
+}
 
 accessSync(sourceApp, constants.R_OK);
 accessSync(cliPath, constants.R_OK);
+launchctl(['bootout', service], { allowFailure: true, quiet: true });
+waitUnloaded();
 mkdirSync(dirname(targetApp), { recursive: true });
 cpSync(sourceApp, targetApp, { recursive: true, force: true });
 chmodSync(targetExe, 0o755);
@@ -34,8 +55,10 @@ writeFileSync(plistPath, `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict><key>Label</key><string>${label}</string><key>ProgramArguments</key><array><string>${xml(targetExe)}</string></array><key>RunAtLoad</key><true/></dict></plist>
 `, { mode: 0o600 });
-run('/bin/launchctl', ['bootout', `gui/${process.getuid()}/${label}`], true);
-run('/bin/launchctl', ['bootstrap', `gui/${process.getuid()}`, plistPath]);
-run('/bin/launchctl', ['print', `gui/${process.getuid()}/${label}`]);
+let boot = launchctl(['bootstrap', domain, plistPath], { allowFailure: true });
+if (boot.status !== 0) { sleep(500); boot = launchctl(['bootstrap', domain, plistPath], { allowFailure: true }); }
+if (boot.status !== 0) process.exit(boot.status ?? 1);
+const pid = waitRunning();
 console.log(`Installed ${targetApp}`);
 console.log(`Configured CLI ${cliPath}`);
+console.log(`Alfred menu bar running pid ${pid}`);
