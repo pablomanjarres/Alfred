@@ -9,6 +9,8 @@ import { ClapIdleError, transcribe, speak } from './voice.js';
 import { doctor } from './doctor.js';
 import { installService, serviceStatus, startService, stopService } from './standby.js';
 import { cueSummary, testCue } from './cue.js';
+import { prepareCompanion, readCompanion } from './companion.js';
+import { endVoice } from './voice-control.js';
 
 const HELP = `Alfred, at your service.
 
@@ -17,6 +19,9 @@ const HELP = `Alfred, at your service.
   alfred transcribe /path/message.m4a Execute a saved voice message
   alfred history                     Show the ten latest local receipts
   alfred standby start|stop|status    Manage login wake standby
+  alfred voice setup                 Create Alfred's dedicated Codex task
+  alfred voice end                   End voice and resume wake listening
+  alfred off                         End voice and switch wake listening off
   alfred cue output current|speakers   Choose where Alfred plays wake cues
   alfred cue test                      Play one wake cue safely
   alfred doctor                      Check account, tools, voice, and pet
@@ -66,6 +71,18 @@ async function main() {
       throw new Error('Use cue output current|speakers or cue test.');
     }
     const config = await loadConfig(overrides);
+    if (command === 'voice' || command === 'off') {
+      const action = command === 'off' ? 'off' : positionals.shift();
+      if (positionals.length || !action || !['setup', 'end', 'off'].includes(action)) throw new Error('Use voice setup, voice end, or off.');
+      if (action === 'setup') {
+        console.log(JSON.stringify(await prepareCompanion(config, { signal })));
+      } else {
+        const companion = await readCompanion();
+        await endVoice({ off: action === 'off', threadId: companion?.threadId, signal });
+        console.log(action === 'off' ? 'Alfred is off.' : 'Codex released its microphone. Alfred is returning to wake listening.');
+      }
+      return;
+    }
     if (values.loop && command !== 'clap') throw new Error('--loop is available only with clap.');
     if (command === 'standby') {
       const action = positionals.shift();
