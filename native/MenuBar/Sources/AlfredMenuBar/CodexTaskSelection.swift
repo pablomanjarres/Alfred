@@ -23,10 +23,12 @@ final class CodexTaskSelection {
     let snapshot: ClipboardSnapshot
     do { snapshot = try ClipboardSnapshot.capture(pasteboard) }
     catch { completion(.failure(error)); return }
-    let before = pasteboard.changeCount
+    guard pasteboard.changeCount == snapshot.changeCount else {
+      completion(.failure(Error.clipboardChanged)); return
+    }
     do { try postCopyLinkShortcut(to: app.processIdentifier) }
     catch { completion(.failure(error)); return }
-    waitForProbe(threadId: threadId, app: app, snapshot: snapshot, before: before,
+    waitForProbe(threadId: threadId, app: app, snapshot: snapshot, before: snapshot.changeCount,
                  pollDeadline: minDate(deadline, Date().addingTimeInterval(1)), overallDeadline: deadline,
                  isCurrent: isCurrent) { [weak self] result in
       guard let self else { completion(.failure(Error.cancelled)); return }
@@ -94,7 +96,7 @@ final class CodexTaskSelection {
   private func minDate(_ a: Date, _ b: Date) -> Date { a < b ? a : b }
 
   enum Error: LocalizedError {
-    case cancelled, notFrontmost, timeout, shortcutUnavailable, clipboardReadFailed, clipboardChanged, selectionMismatch
+    case cancelled, notFrontmost, timeout, shortcutUnavailable, clipboardReadFailed, clipboardChanged
 
     var errorDescription: String? {
       switch self {
@@ -104,22 +106,24 @@ final class CodexTaskSelection {
       case .shortcutUnavailable: return "Could not copy the Codex task link."
       case .clipboardReadFailed: return "Could not safely preserve the clipboard."
       case .clipboardChanged: return "The clipboard changed during task confirmation. Ask Alfred again."
-      case .selectionMismatch: return "Codex did not select the requested Alfred task. Open the Alfred task, then ask again."
       }
     }
   }
 
   private struct ClipboardSnapshot {
+    let changeCount: Int
     let items: [[NSPasteboard.PasteboardType: Data]]
 
     static func capture(_ pasteboard: NSPasteboard) throws -> ClipboardSnapshot {
+      let changeCount = pasteboard.changeCount
       let captured = try (pasteboard.pasteboardItems ?? []).map { item in
         try Dictionary(uniqueKeysWithValues: item.types.map { type in
           guard let data = item.data(forType: type) else { throw Error.clipboardReadFailed }
           return (type, data)
         })
       }
-      return ClipboardSnapshot(items: captured)
+      guard pasteboard.changeCount == changeCount else { throw Error.clipboardChanged }
+      return ClipboardSnapshot(changeCount: changeCount, items: captured)
     }
 
     func restore(to pasteboard: NSPasteboard, replacingChangeCount changeCount: Int) throws {
@@ -129,6 +133,7 @@ final class CodexTaskSelection {
         for (type, data) in saved where !item.setData(data, forType: type) { throw Error.clipboardReadFailed }
         return item
       }
+      guard pasteboard.changeCount == changeCount else { throw Error.clipboardChanged }
       pasteboard.clearContents()
       guard pasteboard.writeObjects(restored) || restored.isEmpty else { throw Error.clipboardReadFailed }
     }
