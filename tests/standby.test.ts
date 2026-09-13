@@ -140,6 +140,46 @@ test('wake watch allows a sleep-length pause before timing out', async () => {
   }
 });
 
+test('microphone status follows native ready and paused events', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
+  const paths = servicePaths(root);
+  const readStatus = async () => JSON.parse(await readFile(paths.state, 'utf8')).status;
+  const waitStatus = async (expected: string) => {
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline) {
+      if (await readStatus().catch(() => '') === expected) return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(await readStatus(), expected);
+  };
+  try {
+    await runStandby(paths, { helper: '/fake/helper', maxCycles: 1,
+      runner: async (_binary, args, options) => {
+        if (args[0] === 'clap-doctor') return { code: 0, stdout: '{"type":"ready"}\n', stderr: '' };
+        assert.equal(await readStatus(), 'starting');
+        options.onLine?.('{"type":"ready","detail":"Waiting for Alfred"}');
+        await waitStatus('running');
+        options.onLine?.('{"type":"paused","detail":"Microphone stopped for sleep"}');
+        await waitStatus('paused');
+        return { code: 0, stdout: '{"type":"idle"}\n', stderr: '' };
+      },
+    });
+    assert.equal(await readStatus(), 'stopped');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('already-cancelled standby does not start a microphone helper', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
+  const controller = new AbortController();
+  controller.abort();
+  try {
+    await runStandby(servicePaths(root), { helper: '/fake/helper', signal: controller.signal,
+      runner: async () => { throw new Error('cancelled standby must not invoke a helper'); },
+    });
+    assert.equal(JSON.parse(await readFile(servicePaths(root).state, 'utf8')).status, 'stopped');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 
 test('wake watch retries one sleep-length timeout before rearming', async () => {
   const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
