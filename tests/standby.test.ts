@@ -180,7 +180,7 @@ test('status verifies the launchd pid is actually running', async () => {
   }
 });
 
-test('standby abort waits for the active clap helper to exit', async () => {
+test('standby abort waits for the active wake helper to exit', async () => {
   const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
   const helper = join(root, 'helper.mjs');
   const pidFile = join(root, 'helper.pid');
@@ -192,7 +192,7 @@ if (args[0] === 'clap-doctor') {
   console.log(JSON.stringify({ type: 'ready', detail: 'microphone=authorized audioInput=true speech=unused' }));
   process.exit(0);
 }
-if (args[0] !== 'clap-watch') process.exit(9);
+if (args[0] !== 'wake-watch') process.exit(9);
 process.on('SIGTERM', () => {
   writeFileSync(${JSON.stringify(stopped)}, 'stopped');
   process.exit(0);
