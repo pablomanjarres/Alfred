@@ -1,0 +1,20 @@
+{
+  "name": "@pablomanjarres/alfred",
+  "version": "0.1.0",
+  "description": "A personal butler for Codex, Cortex, and the rest of your tools.",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "bin": { "alfred": "dist/cli.js" },
+  "scripts": {
+    "build": "tsc",
+    "build:voice": "node scripts/build-voice.mjs",
+    "test": "tsx --test tests/*.test.ts",
+    "check": "npm run build && npm test",
+    "start": "node dist/cli.js",
+    "setup": "node scripts/install.mjs"
+  },
+  "devDependencies": { "@types/node": "^22.0.0", "tsx": "^4.20.0", "typescript": "^5.9.0" },
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/pablomanjarres/Alfred.git" }
+}

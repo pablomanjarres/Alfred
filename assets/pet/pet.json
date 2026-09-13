@@ -1,0 +1,6 @@
+{
+  "id": "alfred",
+  "displayName": "Alfred",
+  "description": "A compact pixel-art Alfred Pennyworth-inspired gentleman butler pet for Codex.",
+  "spritesheetPath": "spritesheet.webp"
+}
