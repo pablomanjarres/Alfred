@@ -117,7 +117,7 @@ final class ClapDetector {
   func push(rms: Float, peak: Float, time: Double) -> Bool {
     if rms < 0.05 { startedHigh = nil; return false }
     if startedHigh == nil { startedHigh = time }
-    guard peak > 0.55, rms > 0.18, time - (startedHigh ?? time) < 0.16 else { return false }
+    guard peak > 0.55, rms > 0.10, time - (startedHigh ?? time) < 0.16 else { return false }
     guard time - lastClap > 0.18 else { return false }
     defer { lastClap = time; sawFirst = true }
     return sawFirst && time - lastClap < 0.9
