@@ -46,20 +46,22 @@ func runVoiceHandoffTests() throws {
   } else { expect(false, "unknown Codex input must block dedicated start") }
 
   let ownedThread = "44444444-4444-4444-8444-444444444444"
-  let ownedStart = VoiceHandoffStartReceipt(requestId: "55555555-5555-4555-8555-555555555555", threadId: ownedThread)
+  let launchDate = Date(timeIntervalSince1970: 1_789_275_100.125)
+  let sameProcess = VoiceCodexProcessIdentity(processID: 1234, launchDate: launchDate)
+  let ownedStart = VoiceHandoffStartReceipt(requestId: "55555555-5555-4555-8555-555555555555", threadId: ownedThread, codexProcessID: 1234, codexLaunchDate: launchDate)
   let matchingEnd = VoiceHandoffRequest(id: UUID().uuidString, status: "pending", requestedAt: now, expiresAt: now.addingTimeInterval(30), action: .end, threadId: ownedThread)
-  expect(VoiceEndOwnershipDecision.forRunningCodex(request: matchingEnd, ownedStart: ownedStart) == .checkInput, "matching owned call can check input before ending")
+  expect(VoiceEndOwnershipDecision.forRunningCodex(request: matchingEnd, ownedStart: ownedStart, currentProcess: sameProcess) == .checkInput, "matching owned call can check input before ending")
   let unscopedEnd = VoiceHandoffRequest(id: UUID().uuidString, status: "pending", requestedAt: now, expiresAt: now.addingTimeInterval(30), action: .end)
-  expect(VoiceEndOwnershipDecision.forRunningCodex(request: unscopedEnd, ownedStart: ownedStart) == .checkInput, "owned current call can end without a repeated thread id")
-  if case .block(let missingOwnerDetail) = VoiceEndOwnershipDecision.forRunningCodex(request: matchingEnd, ownedStart: nil) {
+  expect(VoiceEndOwnershipDecision.forRunningCodex(request: unscopedEnd, ownedStart: ownedStart, currentProcess: sameProcess) == .checkInput, "owned current call can end without a repeated thread id")
+  if case .block(let missingOwnerDetail) = VoiceEndOwnershipDecision.forRunningCodex(request: matchingEnd, ownedStart: nil, currentProcess: sameProcess) {
     expect(missingOwnerDetail.contains("Alfred has not started"), "end blocks without an Alfred-owned start")
   } else { expect(false, "running Codex end must require ownership") }
   let mismatchedEnd = VoiceHandoffRequest(id: UUID().uuidString, status: "pending", requestedAt: now, expiresAt: now.addingTimeInterval(30), action: .end, threadId: "66666666-6666-4666-8666-666666666666")
-  if case .block(let mismatchDetail) = VoiceEndOwnershipDecision.forRunningCodex(request: mismatchedEnd, ownedStart: ownedStart) {
+  if case .block(let mismatchDetail) = VoiceEndOwnershipDecision.forRunningCodex(request: mismatchedEnd, ownedStart: ownedStart, currentProcess: sameProcess) {
     expect(mismatchDetail.contains("different Alfred task"), "end blocks a mismatched thread id")
   } else { expect(false, "mismatched end must block") }
-  let legacyOwnedStart = VoiceHandoffStartReceipt(requestId: "77777777-7777-4777-8777-777777777777", threadId: nil)
-  if case .block(let legacyMismatchDetail) = VoiceEndOwnershipDecision.forRunningCodex(request: matchingEnd, ownedStart: legacyOwnedStart) {
+  let legacyOwnedStart = VoiceHandoffStartReceipt(requestId: "77777777-7777-4777-8777-777777777777", threadId: nil, codexProcessID: 1234, codexLaunchDate: launchDate)
+  if case .block(let legacyMismatchDetail) = VoiceEndOwnershipDecision.forRunningCodex(request: matchingEnd, ownedStart: legacyOwnedStart, currentProcess: sameProcess) {
     expect(legacyMismatchDetail.contains("different Alfred task"), "threaded end blocks a legacy owned receipt")
   } else { expect(false, "threaded end must not match unscoped ownership") }
 
@@ -86,6 +88,28 @@ func runVoiceHandoffTests() throws {
   try checkHandoff(store.finish(replacement.id, status: "ended", detail: "Codex voice ended"), "matching end completion succeeds")
   try checkHandoff(store.read()?.status == "ended", "ended completion is persisted")
   try checkHandoff(!(try store.canDispatch(replacement.id, now: now)), "completed request never dispatches again")
+
+
+  let persistentReceipt = VoiceHandoffStartReceipt(requestId: replacement.id, threadId: ownedThread, codexProcessID: 1234, codexLaunchDate: launchDate)
+  try store.rememberStart(persistentReceipt)
+  let reloadedStore = VoiceHandoffStore(directory: directory)
+  let reloadedReceipt = try reloadedStore.readStartReceipt()
+  try checkHandoff(reloadedReceipt?.requestId == persistentReceipt.requestId && reloadedReceipt?.threadId == persistentReceipt.threadId && reloadedReceipt?.codexProcessID == 1234, "owned call receipt survives menu relaunch")
+  try checkHandoff(abs((reloadedReceipt?.codexLaunchDate.timeIntervalSince1970 ?? 0) - launchDate.timeIntervalSince1970) < 0.000_001, "fractional Codex launch time survives receipt encoding")
+  let sessionAttrs = try FileManager.default.attributesOfItem(atPath: directory.appendingPathComponent("voice-session.json").path)
+  expect((sessionAttrs[.posixPermissions] as? NSNumber)?.intValue == 0o600, "voice session receipt remains private")
+  expect(VoiceEndOwnershipDecision.forRunningCodex(request: matchingEnd, ownedStart: persistentReceipt, currentProcess: sameProcess) == .checkInput, "matching process identity can end the owned call")
+  let relaunchedProcess = VoiceCodexProcessIdentity(processID: 1234, launchDate: launchDate.addingTimeInterval(1))
+  if case .block(let relaunchedDetail) = VoiceEndOwnershipDecision.forRunningCodex(request: matchingEnd, ownedStart: persistentReceipt, currentProcess: relaunchedProcess) {
+    expect(relaunchedDetail.contains("different Codex app session"), "restarted Codex process invalidates old ownership")
+  } else { expect(false, "restarted Codex process must not reuse an old receipt") }
+  let badReceipt = directory.appendingPathComponent("voice-session.json")
+  try Data(#"{"requestId":"bad","codexProcessID":0,"codexLaunchDate":"2026-09-13T12:00:00Z"}"#.utf8).write(to: badReceipt)
+  try checkHandoff(reloadedStore.readStartReceipt() == nil, "invalid voice session receipt is ignored")
+  try store.rememberStart(persistentReceipt)
+  try store.clearStartReceipt()
+  try checkHandoff(store.readStartReceipt() == nil, "terminal end clears owned call receipt")
+
   let attrs = try FileManager.default.attributesOfItem(atPath: directory.appendingPathComponent("handoff.json").path)
   expect((attrs[.posixPermissions] as? NSNumber)?.intValue == 0o600, "handoff state remains private")
   print("VoiceHandoffTests passed")
