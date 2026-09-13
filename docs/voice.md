@@ -12,7 +12,7 @@ The script builds the Swift package in `native/` and assembles `dist/AlfredVoice
 
 - `AlfredVoice selftest`, which tests double-clap detection without the microphone.
 - `AlfredVoice clap-selftest`, which proves the clap watch event path and PCM buffer wiping without the microphone or Speech Recognition.
-- Packaged keyword checks with generated voices, including similar names that must stay quiet. The temporary test audio is deleted afterward.
+- Packaged keyword checks with pinned, generated voices, including similar names that must stay quiet. Extracted test copies are deleted afterward; the fixtures contain no microphone recordings.
 - `AlfredVoice doctor`, which checks recognizer, microphone authorization state, and audio input availability without prompting. First-use permission state is reported but does not fail the build script.
 
 The helper can also run from `native/.build/release/AlfredVoice`. `src/voice.ts` discovers both locations relative to the compiled `dist/voice.js`; `ALFRED_VOICE_HELPER=/path/to/AlfredVoice` overrides discovery for tests and development.
