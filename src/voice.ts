@@ -3,7 +3,6 @@ import { access } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
-import { StringDecoder } from 'node:string_decoder';
 export type TranscribeOptions = {
   mode: 'listen' | 'clap' | 'file';
   file?: string;
@@ -16,6 +15,8 @@ type HelperEvent =
   | { type: 'ready' | 'listening'; status?: string; detail?: string }
   | { type: 'transcript'; text?: string }
   | { type: 'error'; message?: string; detail?: string };
+type ChildResult = { code: number; stderr: string };
+const KILL_GRACE_MS = 1_500;
 export async function transcribe(options: TranscribeOptions): Promise<string> {
   if (process.platform !== 'darwin') {
     throw new Error('Alfred voice requires macOS Speech and AVAudioEngine.');
@@ -37,22 +38,13 @@ export async function speak(text: string, signal?: AbortSignal): Promise<void> {
   }
   if (signal?.aborted) throw new Error('speech aborted');
 
-  await new Promise<void>((resolvePromise, reject) => {
-    const child = spawn('/usr/bin/say', [text], { stdio: ['ignore', 'ignore', 'pipe'] });
-    const abort = () => {
-      child.kill('SIGTERM');
-      reject(new Error('speech aborted'));
-    };
-    signal?.addEventListener('abort', abort, { once: true });
-
-    const stderr = collectStderr(child.stderr);
-    child.on('error', reject);
-    child.on('close', (code) => {
-      signal?.removeEventListener('abort', abort);
-      if (code === 0) resolvePromise();
-      else reject(new Error(stderr() || `say exited with code ${code}`));
-    });
+  const say = process.env.ALFRED_SAY_BINARY ?? '/usr/bin/say';
+  const result = await runChild(say, ['-f', '-'], {
+    input: text,
+    signal,
+    timeoutMs: envMs('ALFRED_SAY_TIMEOUT_MS', 30_000),
   });
+  if (result.code !== 0) throw new Error(result.stderr || `say exited with code ${result.code}`);
 }
 export async function voiceStatus(): Promise<VoiceStatus> {
   if (process.platform !== 'darwin') {
@@ -97,94 +89,118 @@ function helperCandidates(): string[] {
 
   return [...new Set(roots.flatMap((root) => relative.map((item) => join(root, item))))];
 }
-function runHelperForTranscript(
+async function runHelperForTranscript(
   helper: string,
   args: string[],
   options: Pick<TranscribeOptions, 'signal' | 'onStatus'>,
 ): Promise<string> {
-  return new Promise((resolvePromise, reject) => {
-    let settled = false;
-    const child = spawn(helper, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-
-    const finish = (error: Error | null, value?: string) => {
-      if (settled) return;
-      settled = true;
-      options.signal?.removeEventListener('abort', abort);
-      if (!child.killed) child.kill('SIGTERM');
-      if (error) reject(error);
-      else resolvePromise(value ?? '');
-    };
-    const abort = () => finish(new Error('voice transcription aborted'));
-
-    if (options.signal?.aborted) {
-      abort();
-      return;
-    }
-    options.signal?.addEventListener('abort', abort, { once: true });
-
-    const stderr = collectStderr(child.stderr);
-    child.on('error', (error) => finish(error));
-    child.on('close', (code) => {
-      if (!settled && code !== 0) {
-        finish(new Error(stderr() || `voice helper exited with code ${code}`));
-      }
-      if (!settled) finish(new Error('voice helper exited without a transcript'));
-    });
-
-    readJsonLines(child.stdout, (event) => {
-      if (event.type === 'ready' || event.type === 'listening') {
-        options.onStatus?.(event.status ?? event.type);
-      } else if (event.type === 'transcript' && event.text !== undefined) {
-        finish(null, event.text);
-      } else if (event.type === 'error') {
-        finish(new Error(event.message ?? event.detail ?? 'voice helper error'));
-      }
-    });
+  let transcript: string | undefined;
+  let helperError: string | undefined;
+  const result = await runChild(helper, args, {
+    signal: options.signal,
+    timeoutMs: envMs('ALFRED_VOICE_TIMEOUT_MS', args[0] === 'clap' ? 180_000 : 45_000),
+    transcriptCloseMs: envMs('ALFRED_VOICE_TRANSCRIPT_CLOSE_MS', 750),
+    onLine: (line, child) => {
+      const event = JSON.parse(line) as HelperEvent;
+      if (event.type === 'ready' || event.type === 'listening') options.onStatus?.(event.status ?? event.type);
+      else if (event.type === 'transcript' && event.text !== undefined) {
+        transcript = event.text;
+        child.closeAfterTranscript();
+      } else if (event.type === 'error') helperError = event.message ?? event.detail ?? 'voice helper error';
+    },
   });
+  if (helperError) throw new Error(helperError);
+  if (transcript !== undefined) return transcript;
+  if (result.code !== 0) throw new Error(result.stderr || `voice helper exited with code ${result.code}`);
+  throw new Error('voice helper exited without a transcript');
 }
 function runHelperForStatus(helper: string, args: string[]): Promise<string> {
-  return new Promise((resolvePromise, reject) => {
-    const child = spawn(helper, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    let detail = 'voice helper is available';
-    const stderr = collectStderr(child.stderr);
-
-    child.on('error', reject);
-    child.on('close', (code) => {
-      if (code === 0) resolvePromise(detail);
-      else reject(new Error(stderr() || detail || `voice helper exited with code ${code}`));
-    });
-    readJsonLines(child.stdout, (event) => {
+  let detail = 'voice helper is available';
+  let helperError: string | undefined;
+  return runChild(helper, args, {
+    timeoutMs: envMs('ALFRED_VOICE_TIMEOUT_MS', 10_000),
+    onLine: (line) => {
+      const event = JSON.parse(line) as HelperEvent;
       if (event.type === 'ready') detail = event.detail ?? event.status ?? detail;
-      if (event.type === 'error') detail = event.message ?? event.detail ?? detail;
+      if (event.type === 'error') helperError = event.message ?? event.detail ?? detail;
+    },
+  }).then((result) => {
+    if (helperError) throw new Error(helperError);
+    if (result.code === 0) return detail;
+    throw new Error(result.stderr || detail || `voice helper exited with code ${result.code}`);
+  });
+}
+function runChild(
+  binary: string,
+  args: string[],
+  options: { input?: string; signal?: AbortSignal; timeoutMs: number; transcriptCloseMs?: number; onLine?: (line: string, child: { closeAfterTranscript: () => void }) => void },
+): Promise<ChildResult> {
+  if (options.signal?.aborted) throw new Error('voice process aborted');
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(binary, args, { detached: process.platform !== 'win32', shell: false, stdio: 'pipe' });
+    let stderr = '', pending = '', failure = '', closing = false;
+    let killTimer: NodeJS.Timeout | undefined, closeTimer: NodeJS.Timeout | undefined;
+    const kill = (signal: NodeJS.Signals) => {
+      try {
+        if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, signal);
+        else child.kill(signal);
+      } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') child.kill(signal); }
+    };
+    const stop = (reason: string) => {
+      if (failure) return;
+      failure = reason;
+      kill('SIGTERM');
+      killTimer = setTimeout(() => kill('SIGKILL'), KILL_GRACE_MS);
+      killTimer.unref();
+    };
+    const closeAfterTranscript = () => {
+      if (closing) return;
+      closing = true;
+      const grace = options.transcriptCloseMs ?? 750;
+      closeTimer = setTimeout(() => kill('SIGTERM'), grace); closeTimer.unref();
+      killTimer = setTimeout(() => kill('SIGKILL'), grace + KILL_GRACE_MS); killTimer.unref();
+    };
+    const lineControls = { closeAfterTranscript };
+    const abort = () => stop('voice process aborted');
+    const timeout = setTimeout(() => stop(`voice process timed out after ${options.timeoutMs} ms`), options.timeoutMs);
+    timeout.unref();
+    options.signal?.addEventListener('abort', abort, { once: true });
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      pending += chunk;
+      try { pending = consumeLines(pending, (line) => options.onLine?.(line, lineControls)); }
+      catch (error) { stop(errorMessage(error)); }
     });
-  });
-}
-function collectStderr(stream: NodeJS.ReadableStream): () => string {
-  let text = '';
-  stream.setEncoding('utf8');
-  stream.on('data', (chunk) => {
-    text += chunk;
-  });
-  return () => text.trim();
-}
-function readJsonLines(stream: NodeJS.ReadableStream, onEvent: (event: HelperEvent) => void): void {
-  const decoder = new StringDecoder('utf8');
-  let pending = '';
-
-  const drain = (text: string) => {
-    pending += text;
-    for (;;) {
-      const newline = pending.indexOf('\n');
-      if (newline === -1) return;
-      const line = pending.slice(0, newline).trim();
-      pending = pending.slice(newline + 1);
-      if (!line) continue;
-      onEvent(JSON.parse(line) as HelperEvent);
+    child.stderr.on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-16_384); });
+    child.stdin.on('error', (error: NodeJS.ErrnoException) => { if (error.code !== 'EPIPE') stop(error.message); });
+    child.on('error', (error) => { cleanup(); reject(new Error(`could not start ${binary}: ${error.message}`)); });
+    child.on('close', (code, signal) => {
+      cleanup();
+      try { if (pending.trim()) options.onLine?.(pending.trim(), lineControls); }
+      catch (error) { reject(error); return; }
+      if (failure) reject(new Error(failure));
+      else resolvePromise({ code: code ?? (signal ? 1 : 0), stderr: stderr.trim() });
+    });
+    child.stdin.end(options.input ?? '');
+    function cleanup() {
+      clearTimeout(timeout);
+      if (closeTimer) clearTimeout(closeTimer); if (killTimer) clearTimeout(killTimer);
+      options.signal?.removeEventListener('abort', abort);
     }
-  };
-
-  stream.on('data', (chunk) => drain(decoder.write(chunk as Buffer)));
-  stream.on('end', () => drain(decoder.end() + '\n'));
+  });
+}
+function consumeLines(pending: string, onLine: (line: string) => void): string {
+  for (;;) {
+    const newline = pending.indexOf('\n');
+    if (newline === -1) return pending;
+    const line = pending.slice(0, newline).trim();
+    pending = pending.slice(newline + 1);
+    if (line) onLine(line);
+  }
+}
+function envMs(name: string, fallback: number): number {
+  const value = Number(process.env[name]); return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
