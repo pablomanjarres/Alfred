@@ -13,17 +13,16 @@ const HELP = `Alfred, at your service.
 
   alfred desktop                     Open this workspace in Codex desktop
   alfred ask "your order"             Run an order through your Codex account
-  alfred listen                      Listen for one spoken order
-  alfred clap                        Double clap, then give an order
   alfred transcribe /path/message.m4a Execute a saved voice message
+  alfred standby start               Start login clap-only standby
   alfred history                     Show the ten latest local receipts
-  alfred standby start|stop|status    Manage login-start clap standby
+  alfred standby start|stop|status    Manage login clap-only standby
   alfred doctor                      Check account, tools, voice, and pet
 
 Options: --cwd PATH, --permission full|workspace|read-only, --model NAME,
          --locale en-US|es-CO, --speak, --new, --loop, --help
---new starts a fresh Codex conversation. --loop repeats clap mode until Ctrl-C.
-Voice helpers require macOS. Codex desktop's own voice button works independently.
+--new starts a fresh Codex conversation.
+Use Codex desktop's voice button for spoken orders. Alfred standby only detects claps.
 Config: ~/.alfred/config.json. Local receipts: ~/.alfred/history/.
 `;
 

@@ -319,7 +319,7 @@ case "clap-watch": _ = waitForClap()
 case "file":
   guard let file = options.file else { fail("file mode requires --file") }
   transcribeFile(file, options.locale)
-case "listen": listenOnce(options.locale)
-case "clap": if waitForClap() { listenOnce(options.locale) }
+case "listen": fail("Alfred-owned live microphone transcription is disabled. Use the Codex voice button for spoken commands.")
+case "clap": fail("Alfred-owned live microphone transcription is disabled. Use clap-watch or standby for clap detection only.")
 default: fail("unknown command \(options.command)")
 }
