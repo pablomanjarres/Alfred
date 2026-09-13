@@ -18,9 +18,10 @@ const AUDIO_INTERRUPTION_RETRIES = 2;
 type Event = { type: 'ready' | 'listening' | 'idle' | 'clap' | 'wake' | 'paused' | 'cue' | 'error'; status?: string; detail?: unknown; message?: string };
 export type Launchctl = (command: string, args: string[]) => Promise<{ code: number; stdout: string; stderr: string }>;
 type Runner = typeof runProcess;
+type Notifier = (message: string) => Promise<void>;
 export type StandbyPaths = ReturnType<typeof servicePaths>;
 export type StandbyState = { status: string; detail: string; updatedAt: string; lastAlertAt?: string };
-export type StandbyRunOptions = { helper?: string; maxCycles?: number; cue?: () => Promise<void>; handoff?: false | ((trigger: string) => Promise<void>); handoffSupported?: () => Promise<boolean>; runner?: Runner; signal?: AbortSignal; recoveryBackoffMs?: number };
+export type StandbyRunOptions = { helper?: string; maxCycles?: number; cue?: () => Promise<void>; handoff?: false | ((trigger: string) => Promise<void>); handoffSupported?: () => Promise<boolean>; runner?: Runner; signal?: AbortSignal; recoveryBackoffMs?: number; notifier?: Notifier };
 export type ReadinessOptions = { paths?: StandbyPaths; helper?: string; runner?: Runner; signal?: AbortSignal; updateState?: boolean };
 export function servicePaths(home = stateDirectory()) {
   const standby = join(home, 'standby');
@@ -114,7 +115,7 @@ export async function runStandby(paths = servicePaths(), options: StandbyRunOpti
   try {
     if (controller.signal.aborted) { await writeState(paths, 'stopped', 'Standby stopped.'); return 0; }
     let ready = await microphoneReadiness({ paths, helper, runner, signal: controller.signal, updateState: true });
-    if (!ready.ok) { await alert(paths, `Alfred standby blocked: ${ready.detail}`); return 0; }
+    if (!ready.ok) { await alert(paths, `Alfred standby blocked: ${ready.detail}`, options.notifier); return 0; }
     const canHandoff = !options.cue && options.handoff !== false && await (options.handoffSupported ?? (() => codexVoiceHandoffSupported({ runner, signal: controller.signal })))();
     let cycles = 0;
     let scheduleCueNext = false;
@@ -151,7 +152,7 @@ export async function runStandby(paths = servicePaths(), options: StandbyRunOpti
         if (controller.signal.aborted) break;
         const detail = error instanceof Error ? error.message : String(error);
         await writeState(paths, 'blocked', detail);
-        await alert(paths, `Alfred standby blocked: ${detail}`);
+        await alert(paths, `Alfred standby blocked: ${detail}`, options.notifier);
         return 0;
       }
     }
@@ -295,7 +296,12 @@ export async function helperPath(): Promise<string> {
 }
 
 async function ensurePrivate(paths: StandbyPaths): Promise<void> { await mkdir(paths.standby, { recursive: true, mode: 0o700 }); await chmod(paths.standby, 0o700); }
-async function writeState(paths: StandbyPaths, status: string, detail: string): Promise<void> { await ensurePrivate(paths); await writeFile(paths.state, JSON.stringify({ status, detail, updatedAt: new Date().toISOString() }) + '\n', { mode: 0o600 }); }
+async function writeState(paths: StandbyPaths, status: string, detail: string): Promise<void> {
+  await ensurePrivate(paths);
+  const previous = await readState(paths);
+  const next = { status, detail, updatedAt: new Date().toISOString(), ...(previous?.lastAlertAt ? { lastAlertAt: previous.lastAlertAt } : {}) };
+  await writeFile(paths.state, JSON.stringify(next) + '\n', { mode: 0o600 });
+}
 async function readState(paths: StandbyPaths): Promise<StandbyState | undefined> { try { return JSON.parse(await readFile(paths.state, 'utf8')) as StandbyState; } catch { return undefined; } }
 async function appendLog(paths: StandbyPaths, chunk: string): Promise<void> {
   if (!chunk) return;
@@ -314,12 +320,16 @@ async function logHelperEvent(paths: StandbyPaths, event: Event): Promise<void> 
     await logEvent(paths, { type: event.type, status: event.status ?? event.type, detail });
   }
 }
-async function alert(paths: StandbyPaths, message: string): Promise<void> {
+async function alert(paths: StandbyPaths, message: string, notifier: Notifier = defaultNotifier): Promise<void> {
   const state = await readState(paths);
   const last = state?.lastAlertAt ? Date.parse(state.lastAlertAt) : 0;
   if (Date.now() - last < 30 * 60_000) return;
-  await runProcess('/usr/bin/osascript', ['-e', `display notification ${JSON.stringify(message)} with title "Alfred"`], { timeoutMs: 10_000 }).catch(() => ({ code: 1, stdout: '', stderr: '' }));
-  if (state) await writeFile(paths.state, JSON.stringify({ ...state, lastAlertAt: new Date().toISOString() }) + '\n', { mode: 0o600 });
+  await notifier(message).catch(() => {});
+  const latest = await readState(paths);
+  if (latest) await writeFile(paths.state, JSON.stringify({ ...latest, lastAlertAt: new Date().toISOString() }) + '\n', { mode: 0o600 });
+}
+function defaultNotifier(message: string): Promise<void> {
+  return runProcess('/usr/bin/osascript', ['-e', `display notification ${JSON.stringify(message)} with title "Alfred"`], { timeoutMs: 10_000 }).then(() => undefined);
 }
 function detailText(value: unknown): string { return typeof value === 'string' ? value : value === undefined ? '' : JSON.stringify(value); }
 function sleepTimeout(error: unknown): boolean { return error instanceof Error && /timed out after 86400000 ms|timeout/i.test(error.message); }
