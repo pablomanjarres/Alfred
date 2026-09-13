@@ -15,20 +15,24 @@ function run(command, args) {
   return result.stdout;
 }
 try {
-  for (const [index, [phrase, expected]] of [
-    ['Alfred', true], ['Hey Alfred', true], ['Alfred can you help', true],
-    ['Jarvis', false], ['Albert', false], ['already', false],
-    ['all right', false], ['hello there', false], ['Alfredo', false],
+  for (const [index, [voice, phrase, expected]] of [
+    ['Daniel', 'Alfred', true], ['Daniel', 'Hey Alfred', true],
+    ['Daniel', 'Alfred can you help', true], ['Daniel', 'Jarvis', false],
+    ['Daniel', 'Albert', false], ['Daniel', 'already', false],
+    ['Daniel', 'all right', false], ['Daniel', 'hello there', false],
+    ['Daniel', 'Alfredo', false], ['Samantha', 'Alfred', true],
+    ['Eddy (English (US))', 'Alfred', true], ['Paulina', 'Hey Alfred', true],
+    ['Paulina', 'Alfredo', false], ['Eddy (English (US))', 'Alfredo', false],
   ].entries()) {
     const file = join(fixtures, `${index}.aiff`);
-    run('/usr/bin/say', ['-v', 'Daniel', '-o', file, phrase]);
+    run('/usr/bin/say', ['-v', voice, '-o', file, phrase]);
     const output = run(helper, ['wake-file', '--file', file]);
     const result = output.trim().split('\n').map((line) => JSON.parse(line))
       .find((event) => event.type === 'wake-test');
     if (!result || result.detected !== expected || result.streaming !== true) {
-      throw new Error(`Wake fixture ${JSON.stringify(phrase)}: expected ${expected}, got ${output}`);
+      throw new Error(`Wake fixture ${voice} ${JSON.stringify(phrase)}: expected ${expected}, got ${output}`);
     }
-    console.log(`Wake fixture passed: ${JSON.stringify(phrase)} (${expected ? 'trigger' : 'quiet'})`);
+    console.log(`Wake fixture passed: ${voice} ${JSON.stringify(phrase)} (${expected ? 'trigger' : 'quiet'})`);
   }
 } finally {
   // These are generated test voices. No microphone is opened or recorded.
