@@ -13,6 +13,9 @@ let fresh = try StandbySnapshot.decode(#"{"loaded":true,"running":true,"pid":42,
 expect(fresh.menuState(now: now).kind == .listening, "fresh running standby should show listening")
 expect(fresh.menuState(now: now).micIndicator, "fresh running standby should show mic indicator")
 expect(fresh.menuState(now: now).cueOutput == .current, "missing cue output should default to current output")
+expect(menuDetail(fresh.menuState(now: now), actionError: MenuActionError(message: "cue failed", expiresAt: now.addingTimeInterval(1)), now: now) == "cue failed", "fresh action errors should overlay status detail")
+expect(menuDetail(fresh.menuState(now: now), actionError: MenuActionError(message: "cue failed", expiresAt: now.addingTimeInterval(-1)), now: now) == "Waiting for deliberate double clap or spoken Alfred", "expired action errors should reveal status detail")
+expect(menuDetail(fresh.menuState(now: now), actionError: MenuActionError(message: "   ", expiresAt: now.addingTimeInterval(1)), now: now) == "Action failed.", "blank action errors should be readable")
 
 let speakers = try StandbySnapshot.decode(#"{"loaded":true,"running":true,"pid":42,"cueOutput":"speakers","state":{"status":"running","detail":"Waiting","updatedAt":"2026-09-13T04:50:00.000Z"},"detail":"Waiting"}"#)
 expect(speakers.menuState(now: now).cueOutput == .speakers, "speakers cue output should decode")
