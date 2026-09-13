@@ -56,6 +56,10 @@ public struct MenuState: Equatable {
   public let detail: String
   public let micIndicator: Bool
 
+  public init(kind: MenuStateKind, detail: String, micIndicator: Bool) {
+    self.kind = kind; self.detail = detail; self.micIndicator = micIndicator
+  }
+
   public var label: String {
     switch kind {
     case .listening: return "Listening for clap or Alfred"
