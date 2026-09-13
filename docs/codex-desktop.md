@@ -5,9 +5,9 @@ Alfred adds the character and the behavior skill. Use the desktop flow for every
 orders; the CLI is useful for saved recordings or a clap sensor.
 
 1. Build Alfred and run `npm run setup`.
-2. Open a new Codex task so the installed `$alfred` skill can be discovered.
+2. Run `alfred voice setup` once to create his dedicated Codex task.
 3. Choose Alfred under Settings > Pets. If needed, restart the app to reload pets.
-4. Invoke `$alfred` and speak or type the order using Codex's own controls.
+4. Wake Alfred and speak your order. His task carries the personality and voice controls.
 
 The skill runs in the current task and uses its tools. It does not recursively
 launch another agent. The optional CLI calls `codex exec` and stores that session's
@@ -31,13 +31,16 @@ for microphone permission.
 ## Wake into voice
 
 With the menu app installed and **Enable voice control** allowed, a double clap or
-“Alfred” opens live voice in the current Codex task. Use `$alfred` in that task for
-the butler behavior. The task keeps its own tools, context, and access settings.
+“Alfred” opens his dedicated task through a supported Codex task link. The task ID
+stays in `~/.alfred/companion.json`; its editable personality profile is
+`~/.alfred/companion/AGENTS.md`. Setup reuses the same task and preserves edits.
+Without companion setup, wake still uses the current task and its instructions.
 
 Alfred stops its microphone before sending **Control-Shift-V** to Codex. It sends
-the shortcut once and checks that Codex has opened input. End the voice call, then
-choose **Start listening** in Alfred to re-arm wake detection. Microphone inactivity
-alone does not prove a call ended, so Alfred does not use it to restart standby.
+the shortcut once and checks that Codex has opened input. Say “Goodbye, Alfred” to
+request the end of the call and restore wake listening. “Alfred, switch off” stops
+both. If you end a call with Codex's button, choose **Start listening** in Alfred.
+Microphone inactivity alone does not prove a call ended, so it never triggers rearming.
 
 This uses the documented [voice control](https://learn.chatgpt.com/docs/reference/commands)
 and [Codex voice chat](https://learn.chatgpt.com/docs/features/voice).

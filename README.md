@@ -22,35 +22,28 @@ cd Alfred
 npm ci
 npm run build
 npm run setup
-alfred desktop
+alfred voice setup
 ```
 
-In a new Codex task, use `$alfred` with the existing voice button or composer.
-[Install the pet](docs/pet.md), then choose **Alfred** in **Settings > Pets**.
+Install the [menu app and voice helper](docs/voice.md), then allow Alfred in macOS
+Accessibility settings. [Choose the Alfred pet](docs/pet.md) under **Settings > Pets**.
 
 ## Local commands
 
 ```bash
 alfred ask "Check my calendar through Cortex"
 alfred doctor
-npm run build:voice
 alfred standby start
-alfred standby status
-alfred standby stop
-npm run setup:menubar-signing
-npm run build:menubar
-npm run install:menubar
+alfred off
 ```
 
-`npm run install:menubar` installs `~/Applications/Alfred.app`. Choose **Enable voice control** and allow Alfred in macOS Accessibility settings.
-
-Say “Alfred” or double clap. After the cue, Codex voice opens in your current task.
-Give your order there. End the call, then choose **Start listening** in Alfred's
-menu to re-arm it. Standby audio is never recorded or sent to Codex.
+Say “Alfred” or double clap. After the cue, give your order in his dedicated Codex
+task. Say “Goodbye, Alfred” to end the call and resume wake listening. Say “Alfred,
+switch off” to stop both. Standby audio is never recorded or sent to Codex.
 
 - Local commands use full access by default; read-only mode is available.
 - Double clap and “Alfred” work while the computer is awake. Waking from system sleep needs an external sensor.
-- Your orders and answers stay in `~/.alfred/`. Codex plan limits still apply.
+- Local CLI history stays in `~/.alfred/`. Voice conversations use Codex. Plan limits still apply.
 
 [Voice setup](docs/voice.md) · [Desktop setup](docs/codex-desktop.md) · [Configuration](config.example.json)
 

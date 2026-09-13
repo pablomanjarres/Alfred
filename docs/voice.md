@@ -1,6 +1,27 @@
 # Alfred Voice
 
-Alfred voice uses Codex desktop's voice button for spoken commands. The local macOS helper still supports explicit transcription of an existing audio file and wake standby for double clap or the local “Alfred” keyword.
+Alfred uses Codex for conversation and a local helper for the “Alfred” keyword and double clap. His dedicated task carries the butler personality and spoken controls.
+
+## Start
+
+```sh
+npm run setup
+alfred voice setup
+npm run build:voice
+npm run setup:menubar-signing
+npm run build:menubar
+npm run install:menubar
+alfred standby start
+```
+
+Allow Alfred's microphone and Accessibility permissions when macOS asks. Wake him, wait for the cue and Codex voice, then speak.
+
+| Say | Result |
+| --- | --- |
+| “Goodbye, Alfred” or “hasta luego” | End the call and return to wake listening |
+| “Alfred, switch off” or “apágate” | End the call and leave wake listening off |
+
+These requests use `alfred voice end` and `alfred off`. The menu sends one stop toggle while Codex is capturing input, then checks that input was released before rearming. An unknown or already inactive input blocks the toggle. Choosing Codex's stop button manually still requires **Start listening** in Alfred afterward.
 
 ## Build
 
@@ -38,13 +59,13 @@ Exports:
 
 ## Wake standby
 
-`alfred standby start` installs and starts `~/Library/LaunchAgents/com.pablo.alfred.standby.plist`. It waits for a double clap or “Alfred” and wakes the display. After a trigger, capture stops and its raw buffers are erased. Alfred plays the cue, then asks the signed menu app to open Codex voice in the current task. It never forwards standby audio to Codex or transcription. Use `alfred standby stop` to unload it and `alfred standby status` to check it.
+`alfred standby start` installs and starts `~/Library/LaunchAgents/com.pablo.alfred.standby.plist`. It waits for a double clap or “Alfred” and wakes the display. After a trigger, capture stops and its raw buffers are erased. Alfred plays the cue, then asks the signed menu app to open Codex voice in his configured task. It never forwards standby audio to Codex or transcription. Use `alfred standby stop` to unload it and `alfred standby status` to check it.
 
-Speak once Codex voice is ready. End the call, then choose **Start listening** in Alfred's menu. Wake detection stays paused during the handoff: Codex exposes a voice toggle but no reliable external call-ended signal. A private request expires after 30 seconds and can be claimed only once. Cancelling standby invalidates it. Permission failures and a voice session that never opens the microphone produce a blocked state.
+Wake detection stays paused during the handoff. Codex exposes a voice toggle but no reliable external call-ended signal, so rearming requires an explicit end request or **Start listening**. A private request expires after 30 seconds and can be claimed only once. Cancelling standby invalidates it. Permission failures and a voice session that never opens the microphone produce a blocked state.
 
 Standby state and bounded logs live under `~/.alfred/standby/` with user-only permissions. Logs contain timestamps, trigger/cue outcomes, frame counts, maximum buffer duration, and `rawAudio: erased`. They never contain raw samples. The native tap rejects buffers over 250 ms, computes local wake features, and wipes PCM buffers before neural decoding. Playback failures are reported instead of being hidden.
 
-If the audio input stops delivering samples, standby waits for the helper to exit and tries a fresh input engine up to twice. Cancellation stops the retry. Repeated interruptions, permission errors, and privacy failures leave a visible blocked state.
+If audio input pauses or a cleared processing delay occurs, standby waits for the helper to exit and tries a fresh input engine up to twice. Cancellation stops the retry. Repeated interruptions, permission errors, and privacy failures leave a visible blocked state. Real failure alerts are limited to one per 30 minutes; tests use a separate notification sender.
 
 Before capture, the keyword detector warms up with generated silence. A competing “Alfredo” entry helps reject that similar name; it never activates Alfred. After a short quiet pause, a fresh recognition stream starts while the previous stream finishes the word ending. At most two streams share the model, and both receive only the same short, erased audio chunks.
 

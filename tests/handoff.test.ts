@@ -101,6 +101,42 @@ test('cancelling handoff rereads after tombstone before marking cancelled', asyn
   }
 });
 
+
+test('voice handoff end requests wait for ended and preserve the thread id', async () => {
+  const paths = isolatedServicePaths(await mkdtemp(join(tmpdir(), 'alfred-handoff-')));
+  try {
+    const result = await requestVoiceHandoff({
+      paths, action: 'end', threadId: '11111111-1111-4111-8111-111111111111', id: () => 'end-1', timeoutMs: 100, pollMs: 1,
+      runner: async () => {
+        const saved = JSON.parse(await readFile(handoffPath(paths), 'utf8')) as HandoffRecord;
+        assert.equal(saved.action, 'end');
+        assert.equal(saved.threadId, '11111111-1111-4111-8111-111111111111');
+        await markHandoff(paths, 'end-1', 'ended', 'Codex voice ended');
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    });
+
+    assert.equal(result.status, 'ended');
+  } finally {
+    await rm(paths.home, { recursive: true, force: true });
+  }
+});
+
+test('voice handoff fails when the menu reports the wrong terminal outcome', async () => {
+  const paths = isolatedServicePaths(await mkdtemp(join(tmpdir(), 'alfred-handoff-')));
+  try {
+    await assert.rejects(requestVoiceHandoff({
+      paths, action: 'end', id: () => 'end-wrong', timeoutMs: 100, pollMs: 1,
+      runner: async () => {
+        await markHandoff(paths, 'end-wrong', 'started', 'wrong direction');
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    }), /expected ended/);
+  } finally {
+    await rm(paths.home, { recursive: true, force: true });
+  }
+});
+
 test('voice handoff reports blocked menu outcomes', async () => {
   const paths = isolatedServicePaths(await mkdtemp(join(tmpdir(), 'alfred-handoff-')));
   await assert.rejects(requestVoiceHandoff({

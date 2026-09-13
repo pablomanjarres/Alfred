@@ -7,6 +7,7 @@ import { homedir } from 'node:os';
 import { runProcess } from './process.js';
 import { cueOutput, stateDirectory } from './config.js';
 import { cancelHandoff, requestVoiceHandoff } from './handoff.js';
+import { readCompanion } from './companion.js';
 
 export const LABEL = 'com.pablo.alfred.standby';
 const LOG_LIMIT = 128 * 1024;
@@ -143,7 +144,7 @@ export async function runStandby(paths = servicePaths(), options: StandbyRunOpti
             await playWakeCue(paths, helper, runner, controller.signal, output);
             await writeState(paths, 'handoff', `${trigger} heard; opening Codex voice.`);
             if (typeof options.handoff === 'function') await options.handoff(trigger);
-            else await requestVoiceHandoff({ paths, runner, signal: controller.signal });
+            else await requestVoiceHandoff({ paths, runner, signal: controller.signal, threadId: (await readCompanion(paths.home))?.threadId });
             await writeState(paths, 'handed-off', 'Voice chat is in Codex. Choose Start listening after ending the call.');
             return 0;
           }
