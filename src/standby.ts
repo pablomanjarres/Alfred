@@ -20,14 +20,15 @@ export function servicePaths(home = stateDirectory()) {
   const launchAgents = process.env.ALFRED_LAUNCH_AGENTS_HOME || join(homedir(), 'Library', 'LaunchAgents');
   return { home, standby, state: join(standby, 'state.json'), log: join(standby, 'standby.log'), plist: join(launchAgents, `${LABEL}.plist`) };
 }
-export function buildPlist(input: { node: string; script: string; alfredHome: string; workingDirectory: string }): string {
+export function buildPlist(input: { node: string; script: string; alfredHome: string; workingDirectory: string; alfredVoiceHelper?: string }): string {
   const args = [input.node, input.script];
+  const env = [["ALFRED_HOME", input.alfredHome], ...(input.alfredVoiceHelper ? [["ALFRED_VOICE_HELPER", input.alfredVoiceHelper]] : [])];
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>${LABEL}</string>
   <key>ProgramArguments</key><array>${args.map((arg) => `<string>${escapeXml(arg)}</string>`).join('')}</array>
-  <key>EnvironmentVariables</key><dict><key>ALFRED_HOME</key><string>${escapeXml(input.alfredHome)}</string></dict>
+  <key>EnvironmentVariables</key><dict>${env.map(([key, value]) => `<key>${key}</key><string>${escapeXml(value)}</string>`).join('')}</dict>
   <key>WorkingDirectory</key><string>${escapeXml(input.workingDirectory)}</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
@@ -51,7 +52,7 @@ export async function installService(options: { paths?: StandbyPaths } = {}): Pr
   const paths = options.paths ?? servicePaths();
   await ensurePrivate(paths);
   await mkdir(dirname(paths.plist), { recursive: true });
-  await writeFile(paths.plist, buildPlist({ node: process.execPath, script: standbyScript(), alfredHome: paths.home, workingDirectory: projectRoot() }), 'utf8');
+  await writeFile(paths.plist, buildPlist({ node: process.execPath, script: standbyScript(), alfredHome: paths.home, workingDirectory: projectRoot(), alfredVoiceHelper: process.env.ALFRED_VOICE_HELPER }), 'utf8');
   await chmod(paths.plist, 0o600);
   await writeState(paths, 'installed', 'LaunchAgent installed.');
   return paths;
