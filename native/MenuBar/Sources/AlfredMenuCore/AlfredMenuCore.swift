@@ -18,6 +18,23 @@ public struct AlfredCLIConfig: Codable, Equatable {
   enum ConfigError: Error { case relativePath }
 }
 
+public enum CueOutput: String, Decodable, Equatable {
+  case current
+  case speakers
+
+  public init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = CueOutput(rawValue: raw) ?? .current
+  }
+
+  public var label: String {
+    switch self {
+    case .current: return "Current audio output"
+    case .speakers: return "Mac speakers"
+    }
+  }
+}
+
 public struct StandbySnapshot: Decodable, Equatable {
   public struct State: Decodable, Equatable {
     public let status: String
@@ -30,6 +47,7 @@ public struct StandbySnapshot: Decodable, Equatable {
   public let pid: Int?
   public let state: State?
   public let detail: String
+  public let cueOutput: CueOutput?
 
   public static func decode(_ json: String) throws -> StandbySnapshot {
     let decoder = JSONDecoder()
@@ -40,14 +58,15 @@ public struct StandbySnapshot: Decodable, Equatable {
   public func menuState(now: Date = Date(), freshSeconds: TimeInterval = 180) -> MenuState {
     let status = state?.status ?? (loaded ? "loaded" : "stopped")
     let text = state?.detail.isEmpty == false ? state!.detail : detail
-    if status == "blocked" { return MenuState(kind: .blocked, detail: text, micIndicator: false) }
-    if status == "paused" { return MenuState(kind: .paused, detail: text, micIndicator: false) }
-    if status == "starting" { return MenuState(kind: .starting, detail: text, micIndicator: false) }
-    guard loaded, running, pid != nil else { return MenuState(kind: .stopped, detail: text, micIndicator: false) }
+    let output = cueOutput ?? .current
+    if status == "blocked" { return MenuState(kind: .blocked, detail: text, micIndicator: false, cueOutput: output) }
+    if status == "paused" { return MenuState(kind: .paused, detail: text, micIndicator: false, cueOutput: output) }
+    if status == "starting" { return MenuState(kind: .starting, detail: text, micIndicator: false, cueOutput: output) }
+    guard loaded, running, pid != nil else { return MenuState(kind: .stopped, detail: text, micIndicator: false, cueOutput: output) }
     guard let updatedAt = state?.updatedAt, now.timeIntervalSince(updatedAt) <= freshSeconds else {
-      return MenuState(kind: .stale, detail: text, micIndicator: false)
+      return MenuState(kind: .stale, detail: text, micIndicator: false, cueOutput: output)
     }
-    return MenuState(kind: .listening, detail: text, micIndicator: true)
+    return MenuState(kind: .listening, detail: text, micIndicator: true, cueOutput: output)
   }
 }
 
@@ -55,9 +74,10 @@ public struct MenuState: Equatable {
   public let kind: MenuStateKind
   public let detail: String
   public let micIndicator: Bool
+  public let cueOutput: CueOutput
 
-  public init(kind: MenuStateKind, detail: String, micIndicator: Bool) {
-    self.kind = kind; self.detail = detail; self.micIndicator = micIndicator
+  public init(kind: MenuStateKind, detail: String, micIndicator: Bool, cueOutput: CueOutput = .current) {
+    self.kind = kind; self.detail = detail; self.micIndicator = micIndicator; self.cueOutput = cueOutput
   }
 
   public var label: String {
