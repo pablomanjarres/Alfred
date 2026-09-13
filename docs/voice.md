@@ -38,7 +38,9 @@ Exports:
 
 ## Wake standby
 
-`alfred standby start` installs and starts `~/Library/LaunchAgents/com.pablo.alfred.standby.plist`. It waits for a double clap or “Alfred” and wakes the display. After a trigger, it prepares the next listener, plays a short cue through your current audio output, then starts capture. Wait for the cue to finish before another attempt. It never invokes Apple Speech, Codex, or transcription from standby. Use `alfred standby stop` to unload it and `alfred standby status` to check it.
+`alfred standby start` installs and starts `~/Library/LaunchAgents/com.pablo.alfred.standby.plist`. It waits for a double clap or “Alfred” and wakes the display. After a trigger, capture stops and its raw buffers are erased. Alfred plays the cue, then asks the signed menu app to open Codex voice in the current task. It never forwards standby audio to Codex or transcription. Use `alfred standby stop` to unload it and `alfred standby status` to check it.
+
+Speak once Codex voice is ready. End the call, then choose **Start listening** in Alfred's menu. Wake detection stays paused during the handoff: Codex exposes a voice toggle but no reliable external call-ended signal. A private request expires after 30 seconds and can be claimed only once. Cancelling standby invalidates it. Permission failures and a voice session that never opens the microphone produce a blocked state.
 
 Standby state and bounded logs live under `~/.alfred/standby/` with user-only permissions. Logs contain timestamps, trigger/cue outcomes, frame counts, maximum buffer duration, and `rawAudio: erased`. They never contain raw samples. The native tap rejects buffers over 250 ms, computes local wake features, and wipes PCM buffers before neural decoding. Playback failures are reported instead of being hidden.
 
@@ -58,13 +60,15 @@ alfred cue output current
 
 The default is `current`. The choice is saved in `~/.alfred/config.json` as `cueOutput`. A muted or zero-volume device produces a clear error; Alfred does not change its volume. The test reports the device and playback level. Playback completion confirms the device received the sound, but cannot prove you heard it.
 
-The wake cue follows model preparation, which can take a few seconds after detection. Its end marks the point when the next listener starts. Wait for the sound to finish before calling Alfred again.
+The wake cue plays after detection stops, before the handoff to Codex. The menu confirms microphone activity before reporting the handoff complete. That check reads process metadata only; it captures no audio.
 
 ## Permissions
 
 Explicit file transcription may require Speech Recognition permission. `voiceStatus()` and `AlfredVoice doctor` do not prompt; they only report the current state. `voiceStatus()` returns `available: false` until Speech Recognition and Microphone are authorized for optional file transcription. Wake standby is separate: it gates only on Microphone authorization and live audio input because it does not use Speech Recognition.
 
 macOS can ask for Alfred's microphone permission even when Codex already has access. Allow it when using the menu's listening controls. The installed Alfred app includes the required microphone explanation and a signed bundle identity.
+
+Choose **Enable voice control** in Alfred's menu, then allow Alfred under **System Settings > Privacy & Security > Accessibility**. This lets the app send Codex's default **Control-Shift-V** voice shortcut. Codex needs its own microphone access and an open task. The handoff requires macOS 14.2 or later; wake detection still supports macOS 13. Keep the default Codex voice shortcut for this integration.
 
 Run `npm run setup:menubar-signing` once before building the menu app. It creates Alfred's own local signing key and reuses it for later builds. Its private files stay under `~/Library/Application Support/Alfred/MenuBar/signing/`; no password entry is needed for normal builds. The installer rejects ad-hoc builds, which remain available for CI checks.
 

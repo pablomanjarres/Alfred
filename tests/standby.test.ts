@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
-import { access, chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { LABEL, buildPlist, ensureMicrophoneReady, runStandby, servicePaths, serviceStatus, startService, stopService, writeBlockedState } from '../src/standby.ts';
+import { handoffCancelledPath, handoffPath, type HandoffRecord } from '../src/handoff.ts';
+import { LABEL, buildPlist, codexVoiceHandoffSupported, ensureMicrophoneReady, runStandby, servicePaths, serviceStatus, startService, stopService, writeBlockedState } from '../src/standby.ts';
 
+
+const noopNotifier = async () => {};
 test('LaunchAgent plist starts standby without restart storms on clean exits', () => {
   const plist = buildPlist({
     node: '/usr/local/bin/node',
@@ -151,7 +154,7 @@ writeFileSync(log + '.once', '1');
 `, 'utf8');
   await chmod(helper, 0o755);
   try {
-    assert.equal(await runStandby(isolatedServicePaths(root), { helper, maxCycles: 2, cue: async () => {} }), 0);
+    assert.equal(await runStandby(isolatedServicePaths(root), { notifier: noopNotifier, helper, maxCycles: 2, cue: async () => {} }), 0);
     const invoked = (await readFile(calls, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
     assert.deepEqual(invoked, [['clap-doctor'], ['wake-watch', '--cue-output', 'current'], ['wake-watch', '--cue-output', 'current']]);
     await assert.rejects(readFile(audio, 'utf8'), /ENOENT/);
@@ -166,7 +169,7 @@ test('wake watch recovers once from a transient audio interruption', async () =>
   const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
   const calls: string[][] = [];
   try {
-    assert.equal(await runStandby(isolatedServicePaths(root), {
+    assert.equal(await runStandby(isolatedServicePaths(root), { notifier: noopNotifier,
       helper: '/fake/helper', maxCycles: 1, cue: async () => {}, recoveryBackoffMs: 1,
       runner: async (_binary, args, options) => {
         calls.push(args);
@@ -191,7 +194,7 @@ test('wake watch stops after two transient audio interruption retries', async ()
   const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
   let wakeCalls = 0;
   try {
-    assert.equal(await runStandby(isolatedServicePaths(root), {
+    assert.equal(await runStandby(isolatedServicePaths(root), { notifier: noopNotifier,
       helper: '/fake/helper', maxCycles: 1, cue: async () => {}, recoveryBackoffMs: 1,
       runner: async (_binary, args) => {
         if (args[0] === 'clap-doctor') return { code: 0, stdout: JSON.stringify({ type: 'ready', detail: 'microphone=authorized audioInput=true speech=unused' }) + '\n', stderr: '' };
@@ -213,7 +216,7 @@ test('wake watch cancellation stops a pending audio interruption retry', async (
   const controller = new AbortController();
   let wakeCalls = 0;
   try {
-    assert.equal(await runStandby(isolatedServicePaths(root), {
+    assert.equal(await runStandby(isolatedServicePaths(root), { notifier: noopNotifier,
       helper: '/fake/helper', maxCycles: 1, cue: async () => {}, recoveryBackoffMs: 50, signal: controller.signal,
       runner: async (_binary, args) => {
         if (args[0] === 'clap-doctor') return { code: 0, stdout: JSON.stringify({ type: 'ready', detail: 'microphone=authorized audioInput=true speech=unused' }) + '\n', stderr: '' };
@@ -236,7 +239,7 @@ test('wake watch fatal errors are not retried as audio interruption recovery', a
   const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
   let wakeCalls = 0;
   try {
-    assert.equal(await runStandby(isolatedServicePaths(root), {
+    assert.equal(await runStandby(isolatedServicePaths(root), { notifier: noopNotifier,
       helper: '/fake/helper', maxCycles: 1, cue: async () => {}, recoveryBackoffMs: 1,
       runner: async (_binary, args) => {
         if (args[0] === 'clap-doctor') return { code: 0, stdout: JSON.stringify({ type: 'ready', detail: 'microphone=authorized audioInput=true speech=unused' }) + '\n', stderr: '' };
@@ -253,11 +256,120 @@ test('wake watch fatal errors are not retried as audio interruption recovery', a
   }
 });
 
+
+test('standby falls back to cue-only rearm on macOS 13 and 14.1', async () => {
+  for (const version of ['13.6.9', '14.1']) {
+    const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
+    const paths = isolatedServicePaths(root);
+    const calls: string[][] = [];
+    const handoffs: string[] = [];
+    try {
+      assert.equal(await runStandby(paths, { notifier: noopNotifier,
+        helper: '/fake/helper', maxCycles: 2,
+        handoff: async (trigger) => { handoffs.push(trigger); },
+        handoffSupported: () => macOS(version),
+        runner: async (_binary, args, options) => {
+          calls.push(args);
+          if (args[0] === 'clap-doctor') return { code: 0, stdout: JSON.stringify({ type: 'ready', detail: 'microphone=authorized audioInput=true speech=unused' }) + '\n', stderr: '' };
+          if (args[0] === 'wake-watch' && !args.includes('--cue')) return { code: 0, stdout: JSON.stringify({ type: 'wake', status: 'Alfred', detail: { rawAudio: 'erased' } }) + '\n', stderr: '' };
+          if (args[0] === 'wake-watch' && args.includes('--cue')) {
+            options.onLine?.(JSON.stringify({ type: 'cue', status: 'played', detail: 'native cue completed' }));
+            options.onLine?.(JSON.stringify({ type: 'ready', detail: 'Waiting for Alfred' }));
+            return { code: 0, stdout: JSON.stringify({ type: 'idle', status: 'wake' }) + '\n', stderr: '' };
+          }
+          throw new Error(`unexpected helper command ${args.join(' ')}`);
+        },
+      }), 0);
+
+      assert.deepEqual(calls, [['clap-doctor'], ['wake-watch', '--cue-output', 'current'], ['wake-watch', '--cue', '--cue-output', 'current']]);
+      assert.deepEqual(handoffs, []);
+      assert.notEqual(JSON.parse(await readFile(paths.state, 'utf8')).status, 'blocked');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+
+test('standby notifier receives fatal errors and throttles repeated alerts', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
+  const paths = isolatedServicePaths(root);
+  const notifications: string[] = [];
+  const runner = async (_binary: string, args: string[]) => {
+    if (args[0] === 'clap-doctor') return { code: 0, stdout: JSON.stringify({ type: 'ready' }) + '\n', stderr: '' };
+    if (args[0] === 'wake-watch') return { code: 1, stdout: JSON.stringify({ type: 'error', message: 'privacy failure' }) + '\n', stderr: '' };
+    throw new Error('unexpected helper command');
+  };
+  try {
+    for (let i = 0; i < 2; i += 1) {
+      assert.equal(await runStandby(paths, {
+        notifier: async (message) => { notifications.push(message); }, helper: '/fake/helper', maxCycles: 1, runner, cue: async () => {},
+      }), 0);
+    }
+    assert.equal(notifications.length, 1);
+    assert.match(notifications[0], /privacy failure/);
+    assert.ok(JSON.parse(await readFile(paths.state, 'utf8')).lastAlertAt);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('standby hands off to the menu on macOS 14.2 and exits handed off', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
+  const paths = isolatedServicePaths(root);
+  const calls: string[][] = [];
+  const handoffs: string[] = [];
+  try {
+    assert.equal(await runStandby(paths, { notifier: noopNotifier,
+      helper: '/fake/helper', maxCycles: 3, handoffSupported: () => macOS('14.2'), handoff: async (trigger) => {
+        assert.equal(JSON.parse(await readFile(paths.state, 'utf8')).status, 'handoff');
+        handoffs.push(trigger);
+      },
+      runner: async (_binary, args) => {
+        calls.push(args);
+        if (args[0] === 'clap-doctor') return { code: 0, stdout: JSON.stringify({ type: 'ready', detail: 'microphone=authorized audioInput=true speech=unused' }) + '\n', stderr: '' };
+        if (args[0] === 'wake-watch') return { code: 0, stdout: JSON.stringify({ type: 'wake', status: 'Alfred', detail: { rawAudio: 'erased' } }) + '\n', stderr: '' };
+        if (args[0] === 'wake-cue') return { code: 0, stdout: JSON.stringify({ type: 'cue', status: 'played' }) + '\n', stderr: '' };
+        throw new Error(`unexpected helper command ${args.join(' ')}`);
+      },
+    }), 0);
+
+    assert.deepEqual(calls, [['clap-doctor'], ['wake-watch', '--cue-output', 'current'], ['wake-cue', '--cue-output', 'current']]);
+    assert.deepEqual(handoffs, ['Alfred']);
+    const state = JSON.parse(await readFile(paths.state, 'utf8'));
+    assert.equal(state.status, 'handed-off');
+    assert.match(state.detail, /Voice chat is in Codex/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('standby blocks when the wake cue does not report played', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
+  const paths = isolatedServicePaths(root);
+  let handedOff = false;
+  try {
+    assert.equal(await runStandby(paths, { notifier: noopNotifier,
+      helper: '/fake/helper', maxCycles: 1, handoffSupported: () => macOS('14.2'), handoff: async () => { handedOff = true; },
+      runner: async (_binary, args) => {
+        if (args[0] === 'clap-doctor') return { code: 0, stdout: JSON.stringify({ type: 'ready', detail: 'microphone=authorized audioInput=true speech=unused' }) + '\n', stderr: '' };
+        if (args[0] === 'wake-watch') return { code: 0, stdout: JSON.stringify({ type: 'wake', status: 'clap' }) + '\n', stderr: '' };
+        if (args[0] === 'wake-cue') return { code: 0, stdout: '', stderr: '' };
+        throw new Error('unexpected helper command');
+      },
+    }), 0);
+    assert.equal(handedOff, false);
+    assert.equal(JSON.parse(await readFile(paths.state, 'utf8')).status, 'blocked');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('wake watch allows a sleep-length pause before timing out', async () => {
   const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
   const calls: { args: string[]; timeoutMs: number }[] = [];
   try {
-    assert.equal(await runStandby(isolatedServicePaths(root), {
+    assert.equal(await runStandby(isolatedServicePaths(root), { notifier: noopNotifier,
       helper: '/fake/helper', maxCycles: 1, cue: async () => {},
       runner: async (_binary, args, options) => {
         calls.push({ args, timeoutMs: options.timeoutMs });
@@ -274,6 +386,54 @@ test('wake watch allows a sleep-length pause before timing out', async () => {
   }
 });
 
+
+test('standby status does not cancel a pending voice handoff', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
+  const paths = isolatedServicePaths(root);
+  const pending = handoff('pending-status');
+  try {
+    await mkdir(paths.standby, { recursive: true });
+    await writeFile(handoffPath(paths), JSON.stringify(pending) + '\n', { mode: 0o600 });
+
+    await serviceStatus({
+      paths,
+      launchctl: async () => ({ code: 113, stdout: '', stderr: 'not loaded' }),
+    });
+
+    assert.deepEqual(JSON.parse(await readFile(handoffPath(paths), 'utf8')), pending);
+    await assert.rejects(readFile(handoffCancelledPath(paths), 'utf8'), /ENOENT/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('standby start and stop cancel stale voice handoffs', async () => {
+  const startRoot = await mkdtemp(join(tmpdir(), 'alfred-standby-start-'));
+  const stopRoot = await mkdtemp(join(tmpdir(), 'alfred-standby-stop-'));
+  const startPaths = isolatedServicePaths(startRoot);
+  const stopPaths = isolatedServicePaths(stopRoot);
+  const launchctl = async (_command: string, args: string[]) => ({ code: args[0] === 'print' ? 113 : 0, stdout: '', stderr: '' });
+  try {
+    await mkdir(startPaths.standby, { recursive: true });
+    await writeFile(handoffPath(startPaths), JSON.stringify(handoff('pending-start')) + '\n', { mode: 0o600 });
+    await startService({
+      paths: startPaths, helper: '/fake/helper', launchctl,
+      runner: async () => ({ code: 0, stdout: JSON.stringify({ type: 'ready', detail: 'microphone=authorized audioInput=true speech=unused' }) + '\n', stderr: '' }),
+    });
+    assert.deepEqual(JSON.parse(await readFile(handoffCancelledPath(startPaths), 'utf8')), { id: 'pending-start' });
+    assert.equal((JSON.parse(await readFile(handoffPath(startPaths), 'utf8')) as HandoffRecord).status, 'cancelled');
+
+    await mkdir(stopPaths.standby, { recursive: true });
+    await writeFile(handoffPath(stopPaths), JSON.stringify(handoff('pending-stop')) + '\n', { mode: 0o600 });
+    await stopService({ paths: stopPaths, launchctl });
+    assert.deepEqual(JSON.parse(await readFile(handoffCancelledPath(stopPaths), 'utf8')), { id: 'pending-stop' });
+    assert.equal((JSON.parse(await readFile(handoffPath(stopPaths), 'utf8')) as HandoffRecord).status, 'cancelled');
+  } finally {
+    await rm(startRoot, { recursive: true, force: true });
+    await rm(stopRoot, { recursive: true, force: true });
+  }
+});
+
 test('microphone status follows native ready and paused events', async () => {
   const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
   const paths = isolatedServicePaths(root);
@@ -287,7 +447,7 @@ test('microphone status follows native ready and paused events', async () => {
     assert.equal(await readStatus(), expected);
   };
   try {
-    await runStandby(paths, { helper: '/fake/helper', maxCycles: 1,
+    await runStandby(paths, { notifier: noopNotifier, helper: '/fake/helper', maxCycles: 1,
       runner: async (_binary, args, options) => {
         if (args[0] === 'clap-doctor') return { code: 0, stdout: '{"type":"ready"}\n', stderr: '' };
         assert.equal(await readStatus(), 'starting');
@@ -311,7 +471,7 @@ test('already-cancelled standby does not start a microphone helper', async () =>
   const controller = new AbortController();
   controller.abort();
   try {
-    await runStandby(isolatedServicePaths(root), { helper: '/fake/helper', signal: controller.signal,
+    await runStandby(isolatedServicePaths(root), { notifier: noopNotifier, helper: '/fake/helper', signal: controller.signal,
       runner: async () => { throw new Error('cancelled standby must not invoke a helper'); },
     });
     assert.equal(JSON.parse(await readFile(isolatedServicePaths(root).state, 'utf8')).status, 'stopped');
@@ -323,7 +483,7 @@ test('wake watch retries one sleep-length timeout before rearming', async () => 
   const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
   const calls: { args: string[]; timeoutMs: number }[] = [];
   try {
-    assert.equal(await runStandby(isolatedServicePaths(root), {
+    assert.equal(await runStandby(isolatedServicePaths(root), { notifier: noopNotifier,
       helper: '/fake/helper', maxCycles: 1, cue: async () => {},
       runner: async (_binary, args, options) => {
         calls.push({ args, timeoutMs: options.timeoutMs });
@@ -349,8 +509,8 @@ test('default wake cue is scheduled inside the next native watch after model set
   await writeFile(join(root, 'config.json'), JSON.stringify({ cueOutput: 'speakers' }) + '\n');
   const calls: string[][] = [];
   try {
-    assert.equal(await runStandby(isolatedServicePaths(root), {
-      helper: '/fake/helper', maxCycles: 2,
+    assert.equal(await runStandby(isolatedServicePaths(root), { notifier: noopNotifier,
+      helper: '/fake/helper', maxCycles: 2, handoff: false,
       runner: async (_binary, args, options) => {
         calls.push(args);
         if (args[0] === 'clap-doctor') return { code: 0, stdout: JSON.stringify({ type: 'ready', detail: 'microphone=authorized audioInput=true speech=unused' }) + '\n', stderr: '' };
@@ -379,8 +539,8 @@ test('default wake cue is scheduled inside the next native watch after model set
 test('native cue errors block instead of being reported as successful wakes', async () => {
   const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
   try {
-    assert.equal(await runStandby(isolatedServicePaths(root), {
-      helper: '/fake/helper', maxCycles: 2,
+    assert.equal(await runStandby(isolatedServicePaths(root), { notifier: noopNotifier,
+      helper: '/fake/helper', maxCycles: 2, handoff: false,
       runner: async (_binary, args) => {
         if (args[0] === 'clap-doctor') return { code: 0, stdout: JSON.stringify({ type: 'ready', detail: 'microphone=authorized audioInput=true speech=unused' }) + '\n', stderr: '' };
         if (args[0] === 'wake-watch' && !args.includes('--cue')) return { code: 0, stdout: JSON.stringify({ type: 'wake', status: 'clap', detail: { rawAudio: 'erased' } }) + '\n', stderr: '' };
@@ -439,7 +599,7 @@ setInterval(() => {}, 1000);
   await chmod(helper, 0o755);
   const controller = new AbortController();
   try {
-    const running = runStandby(isolatedServicePaths(root), { helper, signal: controller.signal, cue: async () => {} });
+    const running = runStandby(isolatedServicePaths(root), { notifier: noopNotifier, helper, signal: controller.signal, cue: async () => {} });
     await waitForFile(pidFile);
     const childPid = Number(await readFile(pidFile, 'utf8'));
     controller.abort();
@@ -463,6 +623,21 @@ function isRunning(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
+
+
+
+async function macOS(version: string): Promise<boolean> {
+  return codexVoiceHandoffSupported({
+    runner: async (binary, args) => {
+      assert.deepEqual([binary, ...args], ['/usr/bin/sw_vers', '-productVersion']);
+      return { code: 0, stdout: `${version}\n`, stderr: '' };
+    },
+  });
+}
+
+function handoff(id: string): HandoffRecord {
+  return { id, status: 'pending', requestedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString() };
+}
 
 function isolatedServicePaths(root: string): ReturnType<typeof servicePaths> {
   return { ...servicePaths(root), plist: join(root, `${LABEL}.plist`) };

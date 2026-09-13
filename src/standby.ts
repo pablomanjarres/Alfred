@@ -6,19 +6,22 @@ import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { runProcess } from './process.js';
 import { cueOutput, stateDirectory } from './config.js';
+import { cancelHandoff, requestVoiceHandoff } from './handoff.js';
 
 export const LABEL = 'com.pablo.alfred.standby';
 const LOG_LIMIT = 128 * 1024;
 const WAKE_WATCH_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const AUDIO_INTERRUPTION = 'microphone stopped delivering audio; wake buffers cleared';
+const AUDIO_PROCESSING_TIMEOUT = 'wake audio processing exceeded its time limit';
 const AUDIO_INTERRUPTION_RETRIES = 2;
 
 type Event = { type: 'ready' | 'listening' | 'idle' | 'clap' | 'wake' | 'paused' | 'cue' | 'error'; status?: string; detail?: unknown; message?: string };
 export type Launchctl = (command: string, args: string[]) => Promise<{ code: number; stdout: string; stderr: string }>;
 type Runner = typeof runProcess;
+type Notifier = (message: string) => Promise<void>;
 export type StandbyPaths = ReturnType<typeof servicePaths>;
 export type StandbyState = { status: string; detail: string; updatedAt: string; lastAlertAt?: string };
-export type StandbyRunOptions = { helper?: string; maxCycles?: number; cue?: () => Promise<void>; runner?: Runner; signal?: AbortSignal; recoveryBackoffMs?: number };
+export type StandbyRunOptions = { helper?: string; maxCycles?: number; cue?: () => Promise<void>; handoff?: false | ((trigger: string) => Promise<void>); handoffSupported?: () => Promise<boolean>; runner?: Runner; signal?: AbortSignal; recoveryBackoffMs?: number; notifier?: Notifier };
 export type ReadinessOptions = { paths?: StandbyPaths; helper?: string; runner?: Runner; signal?: AbortSignal; updateState?: boolean };
 export function servicePaths(home = stateDirectory()) {
   const standby = join(home, 'standby');
@@ -43,6 +46,19 @@ export function buildPlist(input: { node: string; script: string; alfredHome: st
 `;
 }
 export async function writeBlockedState(paths: StandbyPaths, detail: string): Promise<void> { await writeState(paths, 'blocked', detail); }
+
+export async function codexVoiceHandoffSupported(options: { runner?: Runner; signal?: AbortSignal } = {}): Promise<boolean> {
+  if (!options.runner && process.platform !== 'darwin') return false;
+  try {
+    const result = await (options.runner ?? runProcess)('/usr/bin/sw_vers', ['-productVersion'], { timeoutMs: 2_000, signal: options.signal });
+    if (result.code !== 0) return false;
+    const [major = 0, minor = 0] = result.stdout.trim().split('.').map((part) => Number.parseInt(part, 10));
+    return major > 14 || (major === 14 && minor >= 2);
+  } catch {
+    options.signal?.throwIfAborted();
+    return false;
+  }
+}
 export async function serviceStatus(options: { paths?: StandbyPaths; launchctl?: Launchctl } = {}) {
   const paths = options.paths ?? servicePaths();
   const launchctl = options.launchctl ?? defaultLaunchctl;
@@ -64,7 +80,9 @@ export async function installService(options: { paths?: StandbyPaths } = {}): Pr
 }
 
 export async function startService(options: { paths?: StandbyPaths; launchctl?: Launchctl; helper?: string; runner?: Runner; signal?: AbortSignal } = {}) {
-  const paths = await installService({ paths: options.paths });
+  const paths = options.paths ?? servicePaths();
+  await cancelHandoff(paths);
+  await installService({ paths });
   const helper = options.helper ?? await helperPath();
   const runner = options.runner ?? runProcess;
   await ensureMicrophoneReady({ paths, helper, runner, signal: options.signal, updateState: true });
@@ -78,6 +96,7 @@ export async function startService(options: { paths?: StandbyPaths; launchctl?: 
 
 export async function stopService(options: { paths?: StandbyPaths; launchctl?: Launchctl } = {}): Promise<void> {
   const paths = options.paths ?? servicePaths();
+  await cancelHandoff(paths);
   const launchctl = options.launchctl ?? defaultLaunchctl;
   await launchctl('/bin/launchctl', ['bootout', serviceTarget()]).catch(() => ({ code: 0, stdout: '', stderr: '' }));
   const status = await serviceStatus({ paths, launchctl });
@@ -96,7 +115,8 @@ export async function runStandby(paths = servicePaths(), options: StandbyRunOpti
   try {
     if (controller.signal.aborted) { await writeState(paths, 'stopped', 'Standby stopped.'); return 0; }
     let ready = await microphoneReadiness({ paths, helper, runner, signal: controller.signal, updateState: true });
-    if (!ready.ok) { await alert(paths, `Alfred standby blocked: ${ready.detail}`); return 0; }
+    if (!ready.ok) { await alert(paths, `Alfred standby blocked: ${ready.detail}`, options.notifier); return 0; }
+    const canHandoff = !options.cue && options.handoff !== false && await (options.handoffSupported ?? (() => codexVoiceHandoffSupported({ runner, signal: controller.signal })))();
     let cycles = 0;
     let scheduleCueNext = false;
     while (!controller.signal.aborted && (options.maxCycles === undefined || cycles < options.maxCycles)) {
@@ -104,7 +124,7 @@ export async function runStandby(paths = servicePaths(), options: StandbyRunOpti
       try {
         await writeState(paths, 'starting', 'Preparing local clap and Alfred wake detection.');
         const output = await cueOutput(paths.home);
-        const trigger = await runWakeWatchWithRetry(paths, helper, runner, controller.signal, options.cue ? false : scheduleCueNext, output, options.recoveryBackoffMs ?? 1000);
+        const trigger = await runWakeWatchWithRetry(paths, helper, runner, controller.signal, options.cue || options.handoff === false || !canHandoff ? scheduleCueNext : false, output, options.recoveryBackoffMs ?? 1000);
         scheduleCueNext = false;
         if (trigger) {
           await writeState(paths, 'starting', `${trigger} heard; microphone stopped for the cue.`);
@@ -117,21 +137,29 @@ export async function runStandby(paths = servicePaths(), options: StandbyRunOpti
               await logEvent(paths, { type: 'cue', status: 'failed', detail });
               throw new Error(`cue failed: ${detail}`);
             }
-          } else {
+          } else if (options.handoff === false || !canHandoff) {
             scheduleCueNext = true;
+          } else {
+            await playWakeCue(paths, helper, runner, controller.signal, output);
+            await writeState(paths, 'handoff', `${trigger} heard; opening Codex voice.`);
+            if (typeof options.handoff === 'function') await options.handoff(trigger);
+            else await requestVoiceHandoff({ paths, runner, signal: controller.signal });
+            await writeState(paths, 'handed-off', 'Voice chat is in Codex. Choose Start listening after ending the call.');
+            return 0;
           }
         }
       } catch (error) {
         if (controller.signal.aborted) break;
         const detail = error instanceof Error ? error.message : String(error);
         await writeState(paths, 'blocked', detail);
-        await alert(paths, `Alfred standby blocked: ${detail}`);
+        await alert(paths, `Alfred standby blocked: ${detail}`, options.notifier);
         return 0;
       }
     }
     await writeState(paths, 'stopped', 'Standby stopped.');
     return 0;
   } finally {
+    if (controller.signal.aborted) await cancelHandoff(paths);
     process.removeListener('SIGTERM', stop); process.removeListener('SIGINT', stop);
     options.signal?.removeEventListener('abort', stop);
   }
@@ -193,6 +221,17 @@ function readinessFailure(command: string, result: { code: number; stdout: strin
   return `${command} did not report ready.`;
 }
 
+
+async function playWakeCue(paths: StandbyPaths, helper: string, runner: Runner, signal: AbortSignal | undefined, output: string): Promise<void> {
+  const result = await runner(helper, ['wake-cue', '--cue-output', output], { timeoutMs: 10_000, signal });
+  await appendLog(paths, result.stdout + result.stderr);
+  const events = parseEvents(result.stdout);
+  const error = events.find((item) => item.type === 'error');
+  if (error) throw new Error(detailText(error.message ?? error.detail ?? 'wake cue failed'));
+  if (result.code !== 0) throw new Error(result.stderr || `wake cue exited with code ${result.code}`);
+  if (!events.some((item) => item.type === 'cue' && item.status === 'played')) throw new Error('wake cue did not report played.');
+}
+
 async function runWakeWatchWithRetry(paths: StandbyPaths, helper: string, runner: Runner, signal?: AbortSignal, playCue = false, output = 'current', recoveryBackoffMs = 1000): Promise<string | undefined> {
   let timeoutRetried = false;
   let audioRetries = 0;
@@ -200,9 +239,10 @@ async function runWakeWatchWithRetry(paths: StandbyPaths, helper: string, runner
     try {
       return await runWakeWatch(paths, helper, runner, signal, playCue, output);
     } catch (error) {
-      if (audioInterruption(error) && audioRetries < AUDIO_INTERRUPTION_RETRIES) {
+      const recoveryDetail = wakeAudioRecoveryDetail(error);
+      if (recoveryDetail && audioRetries < AUDIO_INTERRUPTION_RETRIES) {
         audioRetries += 1;
-        await writeState(paths, 'starting', `Microphone input paused; recovering wake detector (${audioRetries}/${AUDIO_INTERRUPTION_RETRIES}).`);
+        await writeState(paths, 'starting', `${recoveryDetail} (${audioRetries}/${AUDIO_INTERRUPTION_RETRIES}).`);
         await delay(recoveryBackoffMs, undefined, { signal });
         continue;
       }
@@ -256,7 +296,12 @@ export async function helperPath(): Promise<string> {
 }
 
 async function ensurePrivate(paths: StandbyPaths): Promise<void> { await mkdir(paths.standby, { recursive: true, mode: 0o700 }); await chmod(paths.standby, 0o700); }
-async function writeState(paths: StandbyPaths, status: string, detail: string): Promise<void> { await ensurePrivate(paths); await writeFile(paths.state, JSON.stringify({ status, detail, updatedAt: new Date().toISOString() }) + '\n', { mode: 0o600 }); }
+async function writeState(paths: StandbyPaths, status: string, detail: string): Promise<void> {
+  await ensurePrivate(paths);
+  const previous = await readState(paths);
+  const next = { status, detail, updatedAt: new Date().toISOString(), ...(previous?.lastAlertAt ? { lastAlertAt: previous.lastAlertAt } : {}) };
+  await writeFile(paths.state, JSON.stringify(next) + '\n', { mode: 0o600 });
+}
 async function readState(paths: StandbyPaths): Promise<StandbyState | undefined> { try { return JSON.parse(await readFile(paths.state, 'utf8')) as StandbyState; } catch { return undefined; } }
 async function appendLog(paths: StandbyPaths, chunk: string): Promise<void> {
   if (!chunk) return;
@@ -275,16 +320,26 @@ async function logHelperEvent(paths: StandbyPaths, event: Event): Promise<void> 
     await logEvent(paths, { type: event.type, status: event.status ?? event.type, detail });
   }
 }
-async function alert(paths: StandbyPaths, message: string): Promise<void> {
+async function alert(paths: StandbyPaths, message: string, notifier: Notifier = defaultNotifier): Promise<void> {
   const state = await readState(paths);
   const last = state?.lastAlertAt ? Date.parse(state.lastAlertAt) : 0;
   if (Date.now() - last < 30 * 60_000) return;
-  await runProcess('/usr/bin/osascript', ['-e', `display notification ${JSON.stringify(message)} with title "Alfred"`], { timeoutMs: 10_000 }).catch(() => ({ code: 1, stdout: '', stderr: '' }));
-  if (state) await writeFile(paths.state, JSON.stringify({ ...state, lastAlertAt: new Date().toISOString() }) + '\n', { mode: 0o600 });
+  await notifier(message).catch(() => {});
+  const latest = await readState(paths);
+  if (latest) await writeFile(paths.state, JSON.stringify({ ...latest, lastAlertAt: new Date().toISOString() }) + '\n', { mode: 0o600 });
+}
+function defaultNotifier(message: string): Promise<void> {
+  return runProcess('/usr/bin/osascript', ['-e', `display notification ${JSON.stringify(message)} with title "Alfred"`], { timeoutMs: 10_000 }).then(() => undefined);
 }
 function detailText(value: unknown): string { return typeof value === 'string' ? value : value === undefined ? '' : JSON.stringify(value); }
 function sleepTimeout(error: unknown): boolean { return error instanceof Error && /timed out after 86400000 ms|timeout/i.test(error.message); }
-function audioInterruption(error: unknown): boolean { return error instanceof Error && error.message === AUDIO_INTERRUPTION; }
+function wakeAudioRecoveryDetail(error: unknown): string | undefined {
+  if (!(error instanceof Error)) return undefined;
+  // Native emits these after it stops capture and wipes the current audio buffers; retrying only restarts the helper.
+  if (error.message === AUDIO_INTERRUPTION) return 'Microphone input paused; recovering wake detector';
+  if (error.message === AUDIO_PROCESSING_TIMEOUT) return 'Wake audio processing timed out; recovering wake detector';
+  return undefined;
+}
 function parseEvents(output: string): Event[] { return output.split('\n').flatMap((line) => { try { return line.trim() ? [JSON.parse(line) as Event] : []; } catch { return []; } }); }
 function domain(): string { return `gui/${process.getuid?.() ?? 0}`; }
 function serviceTarget(): string { return `${domain()}/${LABEL}`; }

@@ -38,6 +38,19 @@ func wakeAudioSelftest() {
   } catch { fail("wake audio selftest failed: \(error)") }
 
   let format = AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1)!
+  let delayedBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 160)!
+  delayedBuffer.frameLength = 160
+  for index in 0..<160 { delayedBuffer.floatChannelData![0][index] = 0.25 }
+  do {
+    let delayedProof = try consumeWakeAudio(delayedBuffer) { _ in
+      Thread.sleep(forTimeInterval: 0.51)
+    }
+    guard delayedProof.processingSeconds >= 0.5,
+          (0..<160).allSatisfy({ delayedBuffer.floatChannelData![0][$0] == 0 }) else {
+      fail("slow wake processing did not wipe input before returning its proof")
+    }
+  } catch { fail("slow wake processing selftest failed: \(error)") }
+
   let longBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 3_200)!
   longBuffer.frameLength = 3_200
   for index in 0..<3_200 { longBuffer.floatChannelData![0][index] = 0.25 }
