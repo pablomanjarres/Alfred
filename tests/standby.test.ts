@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { LABEL, buildPlist, playCue, runStandby, servicePaths, serviceStatus, stopService, writeBlockedState } from '../src/standby.ts';
+import { LABEL, buildPlist, runStandby, servicePaths, serviceStatus, stopService, writeBlockedState } from '../src/standby.ts';
 
 test('LaunchAgent plist starts standby without restart storms on clean exits', () => {
   const plist = buildPlist({
@@ -167,6 +167,7 @@ test('microphone status follows native ready and paused events', async () => {
     assert.equal(await readStatus(), 'stopped');
     const log = await readFile(paths.log, 'utf8');
     assert.match(log, /"type":"ready"/);
+    assert.match(log, /"type":"idle"/);
     assert.match(log, /"at":"\d{4}-\d{2}-\d{2}T/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -208,40 +209,56 @@ test('wake watch retries one sleep-length timeout before rearming', async () => 
 
 
 
-test('default cue failures are surfaced instead of swallowed', async () => {
-  await assert.rejects(playCue(async () => ({ code: 1, stdout: '', stderr: 'no output device' })), /no output device/);
+
+test('default wake cue is scheduled inside the next native watch after model setup', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
+  const calls: string[][] = [];
+  try {
+    assert.equal(await runStandby(servicePaths(root), {
+      helper: '/fake/helper', maxCycles: 2,
+      runner: async (_binary, args, options) => {
+        calls.push(args);
+        if (args[0] === 'clap-doctor') return { code: 0, stdout: JSON.stringify({ type: 'ready', detail: 'microphone=authorized audioInput=true speech=unused' }) + '\n', stderr: '' };
+        if (args[0] === 'wake-watch' && args.length === 1) return { code: 0, stdout: JSON.stringify({ type: 'wake', status: 'clap', detail: { rawAudio: 'erased' } }) + '\n', stderr: '' };
+        if (args[0] === 'wake-watch' && args[1] === '--cue') {
+          options.onLine?.(JSON.stringify({ type: 'cue', status: 'played', detail: 'native cue completed' }));
+          options.onLine?.(JSON.stringify({ type: 'ready', detail: 'Waiting for Alfred' }));
+          return { code: 0, stdout: JSON.stringify({ type: 'idle', status: 'wake' }) + '\n', stderr: '' };
+        }
+        throw new Error(`unexpected helper command ${args.join(' ')}`);
+      },
+    }), 0);
+    assert.deepEqual(calls, [['clap-doctor'], ['wake-watch'], ['wake-watch', '--cue']]);
+    const log = await readFile(join(root, 'standby', 'standby.log'), 'utf8');
+    assert.match(log, /"type":"wake"/);
+    assert.match(log, /"type":"cue"/);
+    assert.match(log, /"type":"ready"/);
+    assert.match(log, /"at":"\d{4}-\d{2}-\d{2}T/);
+    const state = JSON.parse(await readFile(join(root, 'standby', 'state.json'), 'utf8'));
+    assert.equal(state.status, 'stopped');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
-
-test('default cue allows measured Bluetooth playback latency', async () => {
-  const calls: number[] = [];
-  await playCue(async (_binary, _args, options) => {
-    calls.push(options.timeoutMs);
-    return { code: 0, stdout: '', stderr: '' };
-  });
-  assert.deepEqual(calls, [10_000]);
-});
-
-test('standby logs wake and cue outcomes without reporting failed cues as success', async () => {
+test('native cue errors block instead of being reported as successful wakes', async () => {
   const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
   try {
     assert.equal(await runStandby(servicePaths(root), {
-      helper: '/fake/helper', maxCycles: 1,
-      runner: async (_binary, args, options) => {
+      helper: '/fake/helper', maxCycles: 2,
+      runner: async (_binary, args) => {
         if (args[0] === 'clap-doctor') return { code: 0, stdout: JSON.stringify({ type: 'ready', detail: 'microphone=authorized audioInput=true speech=unused' }) + '\n', stderr: '' };
-        if (args[0] === 'wake-watch') return { code: 0, stdout: JSON.stringify({ type: 'wake', status: 'clap', detail: { rawAudio: 'erased' } }) + '\n', stderr: '' };
-        if (args[0] === '/System/Library/Sounds/Ping.aiff') return { code: 1, stdout: '', stderr: 'headphones unavailable' };
+        if (args[0] === 'wake-watch' && args.length === 1) return { code: 0, stdout: JSON.stringify({ type: 'wake', status: 'clap', detail: { rawAudio: 'erased' } }) + '\n', stderr: '' };
+        if (args[0] === 'wake-watch' && args[1] === '--cue') return { code: 0, stdout: JSON.stringify({ type: 'error', message: 'native cue failed' }) + '\n', stderr: '' };
         throw new Error('unexpected helper command');
       },
     }), 0);
     const state = JSON.parse(await readFile(join(root, 'standby', 'state.json'), 'utf8'));
     assert.equal(state.status, 'blocked');
-    assert.match(state.detail, /headphones unavailable/);
+    assert.match(state.detail, /native cue failed/);
     const log = await readFile(join(root, 'standby', 'standby.log'), 'utf8');
-    assert.match(log, /"type":"wake"/);
-    assert.match(log, /"type":"cue"/);
-    assert.match(log, /"status":"failed"/);
-    assert.match(log, /"at":"\d{4}-\d{2}-\d{2}T/);
+    assert.match(log, /"type":"error"/);
+    assert.match(log, /native cue failed/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
