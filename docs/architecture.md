@@ -10,7 +10,7 @@ the result, records a private receipt, and can read the answer aloud. One order 
 at a time. Cancellation and a configurable deadline stop the child process group.
 
 Native audio uses Apple Speech and AVAudioEngine. The helper listens for one order,
-or waits for a double clap before listening. It closes the microphone before Codex
+or runs clap-only standby. It closes any Alfred-owned microphone helper before Codex
 runs. Spoken output therefore cannot become the next instruction. Audio-file input
 supports saved voice messages without adding a messaging service.
 

@@ -1,6 +1,6 @@
 # Alfred Voice
 
-Alfred voice is a local macOS helper for one-shot spoken commands. The Node API starts the helper, waits for one transcript, then lets the caller run Codex and speak the answer after the microphone process has exited.
+Alfred voice uses Codex desktop's voice button for spoken commands. The local macOS helper still supports explicit transcription of an existing audio file and clap-only standby.
 
 ## Build
 
@@ -22,8 +22,8 @@ The helper can also run from `native/.build/release/AlfredVoice`. `src/voice.ts`
 import { speak, transcribe, voiceStatus } from './voice.js';
 
 const status = await voiceStatus();
-const order = await transcribe({ mode: 'clap', locale: 'en-US' });
-await speak(`Right away. I heard: ${order}`);
+const order = await transcribe({ mode: 'file', file: '/path/message.m4a', locale: 'en-US' });
+await speak(`Right away. I read: ${order}`);
 ```
 
 Exports:
@@ -32,11 +32,7 @@ Exports:
 - `speak(text, signal): Promise<void>`
 - `voiceStatus(): Promise<{ available: boolean; detail: string }>`
 
-`mode: 'listen'` records one spoken command. `mode: 'file'` transcribes one audio file and requires `file`. `mode: 'clap'` waits for a deliberate double clap, wakes the display with `caffeinate -u -t 3`, records one spoken command, emits one transcript, and exits.
-
-Run `alfred clap --loop` only when you explicitly want the CLI to wait for a clap and then capture one spoken order. It rearms after each two-minute idle window and completed order. Ctrl-C, a permission failure, or another real error stops it. The microphone closes between windows and while Alfred acts or speaks.
-
-Live capture lasts up to 12 seconds, then allows five seconds for Apple Speech to finish. Only a final transcript becomes an order; incomplete results are rejected.
+`mode: 'file'` transcribes one existing audio file and requires `file`. `mode: 'listen'` and `mode: 'clap'` are disabled for Alfred-owned live microphone transcription; use the Codex voice button for spoken orders. The native helper also refuses direct `listen` and legacy `clap` commands so there is no hidden live-ASR path.
 
 ## Clap standby
 
@@ -46,12 +42,12 @@ Standby state and bounded logs live under `~/.alfred/standby/` with user-only pe
 
 ## Permissions
 
-The first real listening action may trigger macOS prompts for Microphone and Speech Recognition. `voiceStatus()` and `AlfredVoice doctor` do not prompt; they only report the current state. `voiceStatus()` returns `available: false` until Speech Recognition and Microphone are authorized. Clap standby is separate: it gates only on Microphone authorization and live audio input because it does not use Speech Recognition.
+Explicit file transcription may require Speech Recognition permission. `voiceStatus()` and `AlfredVoice doctor` do not prompt; they only report the current state. `voiceStatus()` returns `available: false` until Speech Recognition and Microphone are authorized for optional file transcription. Clap standby is separate: it gates only on Microphone authorization and live audio input because it does not use Speech Recognition.
 
 The bundled app plist explains the privacy reasons:
 
-- Microphone: Alfred listens only when asked, so it can transcribe one local command.
-- Speech Recognition: Alfred uses Apple on-device speech recognition to turn that command into text.
+- Microphone: Alfred uses short live input only for clap standby.
+- Speech Recognition: Alfred uses Apple on-device speech recognition only for explicit existing-file transcription.
 
 Recognition is configured with `requiresOnDeviceRecognition = true`. There is no speech API key and no remote speech service in this helper.
 
@@ -72,8 +68,8 @@ The native helper writes UTF-8 JSON lines to stdout:
 {"type":"error","message":"microphone permission was not granted"}
 ```
 
-The event types are `ready`, `listening`, `transcript`, `error`, and `idle`. An `idle` event means the clap window ended without a double clap; it contains no order.
+The event types are `ready`, `listening`, `transcript`, `error`, `clap`, and `idle`. An `idle` event means the clap window ended without a double clap; it contains no order.
 
 ## Verification Limits
 
-The no-microphone checks compile the helper, test clap detection and main-queue callback delivery, and run the non-prompting doctor command. They do not prove real microphone transcription quality; that requires speaking into the Mac after granting permissions.
+The no-microphone checks compile the helper, test clap detection and main-queue callback delivery, run the clap privacy selftest, and run the non-prompting doctor command. They do not claim anything about Codex desktop's separate voice capture.
