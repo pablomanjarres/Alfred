@@ -23,13 +23,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   @objc private func refreshStatus() {
     guard let config else { setError("Missing Alfred menu config. Run npm run install:menubar."); return }
     runAlfred(["standby", "status"], config: config, timeout: 10) { [weak self] result in
-      switch result {
-      case .success(let output):
-        do { self?.lastState = try StandbySnapshot.decode(output).menuState() }
-        catch { self?.setError("Could not read standby status: \(error.localizedDescription)") }
-      case .failure(let error): self?.setError(error.localizedDescription)
+      DispatchQueue.main.async {
+        switch result {
+        case .success(let output):
+          do { self?.lastState = try StandbySnapshot.decode(output).menuState() }
+          catch { self?.setError("Could not read standby status: \(error.localizedDescription)") }
+        case .failure(let error): self?.setError(error.localizedDescription)
+        }
+        self?.rebuildMenu()
       }
-      DispatchQueue.main.async { self?.rebuildMenu() }
     }
   }
 
@@ -43,8 +45,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       setError("Could not find Codex. Open it once from Applications."); rebuildMenu(); return
     }
     NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration()) { [weak self] _, error in
-      if let error { self?.setError("Could not open Codex: \(error.localizedDescription)") }
-      DispatchQueue.main.async { self?.rebuildMenu() }
+      DispatchQueue.main.async {
+        if let error { self?.setError("Could not open Codex: \(error.localizedDescription)") }
+        self?.rebuildMenu()
+      }
     }
   }
 
@@ -58,13 +62,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     lastState = MenuState(kind: .starting, detail: "Running alfred \(args.joined(separator: " "))…", micIndicator: false)
     rebuildMenu()
     runAlfred(args, config: config, timeout: timeout) { [weak self] result in
-      if case .failure(let error) = result { self?.setError(error.localizedDescription) }
-      DispatchQueue.main.async { self?.refreshStatus() }
+      DispatchQueue.main.async {
+        if case .failure(let error) = result { self?.setError(error.localizedDescription) }
+        self?.refreshStatus()
+      }
     }
   }
 
   private func rebuildMenu() {
     statusItem.button?.title = lastState.micIndicator ? "🎩•" : "🎩"
+    statusItem.button?.toolTip = "Alfred standby menu"
+    statusItem.button?.setAccessibilityLabel("Alfred standby menu")
     let menu = NSMenu()
     let status = NSMenuItem(title: lastState.label, action: nil, keyEquivalent: "")
     status.isEnabled = false
