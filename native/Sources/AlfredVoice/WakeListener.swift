@@ -84,6 +84,7 @@ func waitForWake(using keyword: WakeKeywordSpotting) throws -> Bool {
   emit("ready", ["status": "wake", "detail": "Double clap or Alfred; local keyword detection; no recordings"])
   let deadline = Date().addingTimeInterval(120)
   _ = waitUntil(deadline) {
+    if stopping.get() { return true }
     if ProcessInfo.processInfo.systemUptime - lastAudio.get() >= 0.75 {
       failure.set("microphone stopped delivering audio; wake buffers cleared")
     }

@@ -88,18 +88,22 @@ export async function runStandby(paths = servicePaths(), options: StandbyRunOpti
   const stop = () => controller.abort();
   process.once('SIGTERM', stop); process.once('SIGINT', stop);
   options.signal?.addEventListener('abort', stop, { once: true });
+  if (options.signal?.aborted) stop();
   try {
+    if (controller.signal.aborted) { await writeState(paths, 'stopped', 'Standby stopped.'); return 0; }
     let ready = await clapStatus(paths, helper, runner);
     if (!ready.ok && ready.detail.includes('notDetermined')) ready = await clapAuthorize(paths, helper, runner, controller.signal);
     if (!ready.ok) { await alert(paths, `Alfred standby blocked: ${ready.detail}`); return 0; }
-    await writeState(paths, 'running', 'Waiting for deliberate double clap or spoken Alfred. Speech recognition is not used by standby.');
     let cycles = 0;
     while (!controller.signal.aborted && (options.maxCycles === undefined || cycles < options.maxCycles)) {
       cycles += 1;
       try {
+        await writeState(paths, 'starting', 'Preparing local clap and Alfred wake detection.');
         const trigger = await runWakeWatchWithRetry(paths, helper, runner, controller.signal);
-        if (trigger) { await (options.cue ?? playCue)(); await writeState(paths, 'running', `${trigger} heard; re-arming wake standby.`); }
-        else await writeState(paths, 'running', 'No wake trigger heard; re-arming wake standby.');
+        if (trigger) {
+          await writeState(paths, 'starting', `${trigger} heard; microphone stopped for the cue.`);
+          await (options.cue ?? playCue)();
+        }
       } catch (error) {
         if (controller.signal.aborted) break;
         const detail = error instanceof Error ? error.message : String(error);
@@ -155,13 +159,27 @@ async function runWakeWatchWithRetry(paths: StandbyPaths, helper: string, runner
     return await runWakeWatch(paths, helper, runner, signal);
   } catch (error) {
     if (!sleepTimeout(error)) throw error;
-    await writeState(paths, 'running', 'Wake watch timed out after 24 hours; retrying once.');
+    await writeState(paths, 'starting', 'Wake watch timed out after 24 hours; retrying once.');
     return runWakeWatch(paths, helper, runner, signal);
   }
 }
 
 async function runWakeWatch(paths: StandbyPaths, helper: string, runner: Runner, signal?: AbortSignal): Promise<string | undefined> {
-  const result = await runner(helper, ['wake-watch'], { timeoutMs: WAKE_WATCH_TIMEOUT_MS, signal });
+  let updates = Promise.resolve();
+  let updateError: unknown;
+  let result: Awaited<ReturnType<Runner>>;
+  try {
+    result = await runner(helper, ['wake-watch'], {
+      timeoutMs: WAKE_WATCH_TIMEOUT_MS, signal,
+      onLine: (line) => {
+        const event = parseEvents(line)[0];
+        const state = event?.type === 'ready' ? 'running' : event?.type === 'paused' ? 'paused' : undefined;
+        if (state) updates = updates.then(() => writeState(paths, state, detailText(event?.detail)))
+          .catch((error) => { updateError = error; });
+      },
+    });
+  } finally { await updates; }
+  if (updateError) throw updateError;
   await appendLog(paths, result.stdout + result.stderr);
   const events = parseEvents(result.stdout);
   const error = events.find((item) => item.type === 'error');
