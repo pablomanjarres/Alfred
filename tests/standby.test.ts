@@ -90,7 +90,7 @@ test('stop unloads launchd and records stopped state', async () => {
 });
 
 
-test('standby loop watches claps without invoking speech or writing audio', async () => {
+test('standby loop watches wake triggers without invoking speech or writing audio', async () => {
   const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
   const helper = join(root, 'helper.mjs');
   const calls = join(root, 'calls.jsonl');
@@ -101,9 +101,9 @@ const log = ${JSON.stringify(calls)};
 const audio = ${JSON.stringify(audio)};
 const args = process.argv.slice(2);
 appendFileSync(log, JSON.stringify(args) + '\\n');
-if (args.some((arg) => ['listen', 'file', 'clap'].includes(arg))) writeFileSync(audio, 'bad');
+if (args.some((arg) => ['listen', 'file', 'clap', 'clap-watch'].includes(arg))) writeFileSync(audio, 'bad');
 if (args[0] === 'clap-doctor') console.log(JSON.stringify({ type: 'ready', detail: 'microphone=authorized audioInput=true speech=unused' }));
-else if (args[0] === 'clap-watch') console.log(JSON.stringify({ type: existsSync(log + '.once') ? 'clap' : 'idle', status: 'clap' }));
+else if (args[0] === 'wake-watch') console.log(JSON.stringify(existsSync(log + '.once') ? { type: 'wake', status: 'Alfred', detail: { rawAudio: 'erased' } } : { type: 'idle', status: 'wake' }));
 else process.exit(9);
 writeFileSync(log + '.once', '1');
 `, 'utf8');
@@ -111,8 +111,53 @@ writeFileSync(log + '.once', '1');
   try {
     assert.equal(await runStandby(servicePaths(root), { helper, maxCycles: 2, cue: async () => {} }), 0);
     const invoked = (await readFile(calls, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
-    assert.deepEqual(invoked, [['clap-doctor'], ['clap-watch'], ['clap-watch']]);
+    assert.deepEqual(invoked, [['clap-doctor'], ['wake-watch'], ['wake-watch']]);
     await assert.rejects(readFile(audio, 'utf8'), /ENOENT/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+
+test('wake watch allows a sleep-length pause before timing out', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
+  const calls: { args: string[]; timeoutMs: number }[] = [];
+  try {
+    assert.equal(await runStandby(servicePaths(root), {
+      helper: '/fake/helper', maxCycles: 1, cue: async () => {},
+      runner: async (_binary, args, options) => {
+        calls.push({ args, timeoutMs: options.timeoutMs });
+        if (args[0] === 'clap-doctor') return { code: 0, stdout: JSON.stringify({ type: 'ready', detail: 'microphone=authorized audioInput=true speech=unused' }) + '\n', stderr: '' };
+        if (args[0] === 'wake-watch') return { code: 0, stdout: JSON.stringify({ type: 'paused', status: 'sleep', detail: 'mic stopped' }) + '\n' + JSON.stringify({ type: 'idle', status: 'wake' }) + '\n', stderr: '' };
+        throw new Error('unexpected helper command');
+      },
+    }), 0);
+    assert.deepEqual(calls.map((call) => call.args), [['clap-doctor'], ['wake-watch']]);
+    assert.equal(calls[1].timeoutMs, 24 * 60 * 60 * 1000);
+    assert.match(await readFile(join(root, 'standby', 'standby.log'), 'utf8'), /"paused"/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+
+test('wake watch retries one sleep-length timeout before rearming', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
+  const calls: { args: string[]; timeoutMs: number }[] = [];
+  try {
+    assert.equal(await runStandby(servicePaths(root), {
+      helper: '/fake/helper', maxCycles: 1, cue: async () => {},
+      runner: async (_binary, args, options) => {
+        calls.push({ args, timeoutMs: options.timeoutMs });
+        if (args[0] === 'clap-doctor') return { code: 0, stdout: JSON.stringify({ type: 'ready', detail: 'microphone=authorized audioInput=true speech=unused' }) + '\n', stderr: '' };
+        if (args[0] === 'wake-watch' && calls.filter((call) => call.args[0] === 'wake-watch').length === 1) throw new Error('Process timed out after 86400000 ms.');
+        if (args[0] === 'wake-watch') return { code: 0, stdout: JSON.stringify({ type: 'idle', status: 'wake' }) + '\n', stderr: '' };
+        throw new Error('unexpected helper command');
+      },
+    }), 0);
+    assert.deepEqual(calls.map((call) => call.args), [['clap-doctor'], ['wake-watch'], ['wake-watch']]);
+    assert.equal(calls[1].timeoutMs, 24 * 60 * 60 * 1000);
+    assert.equal(calls[2].timeoutMs, 24 * 60 * 60 * 1000);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
