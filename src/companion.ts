@@ -27,7 +27,7 @@ export async function prepareCompanion(config: Config, options: { home?: string;
     const cwd = join(home, 'companion');
     await mkdir(cwd, { recursive: true, mode: 0o700 });
     await chmod(cwd, 0o700);
-    const template = await readFile(new URL('../assets/companion/AGENTS.md', import.meta.url), 'utf8');
+    const template = await readFile(new URL('../assets/companion/instructions.md', import.meta.url), 'utf8');
     const command = `'${join(homedir(), '.local/bin/alfred').replaceAll("'", "'\\''")}'`;
     try { await writeFile(join(cwd, 'AGENTS.md'), template.replaceAll('{{ALFRED_COMMAND}}', command), { flag: 'wx', mode: 0o600 }); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
