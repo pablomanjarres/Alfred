@@ -1,6 +1,14 @@
 # Alfred Codex Pet
 
-Alfred is a custom Codex pet packaged at `/Users/pablo/.codex/pets/alfred`.
+Alfred is a custom Codex pet. Install it into the active Codex home with:
+
+```bash
+PET_HOME="${CODEX_HOME:-$HOME/.codex}/pets/alfred"
+mkdir -p "$PET_HOME"
+cp assets/pet/pet.json assets/pet/spritesheet.webp "$PET_HOME"/
+```
+
+Then select it in Codex from Settings > Pets > Alfred.
 
 The pet uses the official 8 column by 9 row Codex atlas contract:
 
@@ -32,4 +40,4 @@ Generated QA artifacts are kept in `assets/pet/`:
 - `idle-preview.gif`
 
 The source run used the hatch-pet deterministic pipeline at `/private/tmp/alfred-pet-run`.
-Validation passed with exact `1536x1872` WebP output, no atlas errors, and zero transparent RGB residue pixels.
+Validation passed with exact `1536x1872` WebP output, no atlas errors, and zero transparent RGB residue pixels. The cleaned atlas was checked on dark and light backgrounds to confirm the magenta generation matte was removed.
