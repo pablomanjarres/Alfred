@@ -1,4 +1,4 @@
-import { cpSync, mkdirSync, rmSync } from 'node:fs';
+import { cpSync, mkdirSync, rmSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -41,10 +41,17 @@ cpSync(join(nativeRoot, '.build', 'release', 'AlfredVoice'), join(macos, 'Alfred
 cpSync(join(nativeRoot, 'Resources', 'Info.plist'), join(contents, 'Info.plist'));
 cpSync(join(nativeRoot, '.build/wake-model/ready'),
   join(resources, 'sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01'), { recursive: true });
+const dependencies = join(nativeRoot, '.build/alfred-deps');
+const licenses = join(resources, 'licenses');
+mkdirSync(licenses, { recursive: true });
+for (const file of readdirSync(dependencies).filter((file) => file.startsWith('LICENSE.'))) {
+  cpSync(join(dependencies, file), join(licenses, file));
+}
 
 run(join(macos, 'AlfredVoice'), ['selftest']);
 run(join(macos, 'AlfredVoice'), ['clap-selftest']);
 run(join(macos, 'AlfredVoice'), ['wake-audio-selftest']);
+run(process.execPath, [join(root, 'scripts/check-wake.mjs')]);
 run(join(macos, 'AlfredVoice'), ['doctor'], { allowFailure: true });
 
 console.log(`Built ${appRoot}`);

@@ -23,6 +23,7 @@ func waitForWake(using keyword: WakeKeywordSpotting) throws -> Bool {
   let heard = Locked<String?>(nil)
   let failure = Locked<String?>(nil)
   let stopping = Locked(false)
+  let closing = Locked(false)
   let cancelled = Locked(false)
   let sleeping = Locked(false)
   let lastAudio = Locked(ProcessInfo.processInfo.systemUptime)
@@ -32,6 +33,7 @@ func waitForWake(using keyword: WakeKeywordSpotting) throws -> Bool {
   let started = ProcessInfo.processInfo.systemUptime
   var tapInstalled = false
   func stopCapture() {
+    closing.set(true)
     engine.stop()
     if tapInstalled { input.removeTap(onBus: 0); tapInstalled = false }
     keyword.close()
@@ -61,7 +63,7 @@ func waitForWake(using keyword: WakeKeywordSpotting) throws -> Bool {
   input.installTap(onBus: 0, bufferSize: 1_024, format: format) { buffer, _ in
     do {
       let proof = try consumeWakeAudio(buffer) { samples in
-        if !stopping.get() && heard.get() == nil { try keyword.accept(samples) }
+        if !closing.get() && !stopping.get() && heard.get() == nil { try keyword.accept(samples) }
       }
       // Both the input and converted waveform are erased before neural decoding.
       lastAudio.set(ProcessInfo.processInfo.systemUptime)
@@ -71,12 +73,16 @@ func waitForWake(using keyword: WakeKeywordSpotting) throws -> Bool {
       guard proof.processingSeconds < 0.5 else {
         throw WakeAudioError(description: "wake audio processing exceeded its time limit")
       }
-      if stopping.get() || heard.get() != nil { return }
+      if closing.get() || stopping.get() || heard.get() != nil { return }
       if clap.push(rms: proof.rms, peak: proof.peak,
                    time: ProcessInfo.processInfo.systemUptime - started) {
         heard.set("clap")
       } else if try keyword.decode() { heard.set("Alfred") }
-    } catch { failure.set(String(describing: error)) }
+    } catch {
+      if !closing.get() && !stopping.get() && heard.get() == nil {
+        failure.set(String(describing: error))
+      }
+    }
   }
   tapInstalled = true
   defer { stopCapture() }
