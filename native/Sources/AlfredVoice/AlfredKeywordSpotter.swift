@@ -82,11 +82,8 @@ final class AlfredKeywordSpotter: WakeKeywordSpotting {
       guard let keywordPointer = result.pointee.keyword else { continue }
       let keyword = String(cString: keywordPointer)
       if keyword == "ALFRED" { return true }
-      if !keyword.isEmpty {
-        SherpaOnnxResetKeywordStream(spotter, stream)
-        try Self.prime(spotter, stream: stream)
-        return false
-      }
+      // The decoder already clears matched hypotheses. Keep its encoder and
+      // timestamps continuous so an ignored name cannot hide the next match.
     }
     return false
   }
