@@ -38,6 +38,16 @@ func wakeAudioSelftest() {
   } catch { fail("wake audio selftest failed: \(error)") }
 
   let format = AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1)!
+  let longBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 3_200)!
+  longBuffer.frameLength = 3_200
+  for index in 0..<3_200 { longBuffer.floatChannelData![0][index] = 0.25 }
+  var sizes: [Int] = []
+  do { _ = try consumeWakeAudio(longBuffer) { sizes.append($0.count) } }
+  catch { fail("wake audio chunk splitting failed: \(error)") }
+  guard sizes == [1_600, 1_600],
+        (0..<3_200).allSatisfy({ longBuffer.floatChannelData![0][$0] == 0 }) else {
+    fail("wake audio exceeded the keyword chunk bound")
+  }
   for oversized in [false, true] {
     let capacity = oversized ? 4_001 : 1_600
     let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(capacity))!
