@@ -1,3 +1,4 @@
+import { setTimeout as delay } from 'node:timers/promises';
 import { constants as fsConstants } from 'node:fs';
 import { access, appendFile, chmod, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
@@ -9,13 +10,15 @@ import { cueOutput, stateDirectory } from './config.js';
 export const LABEL = 'com.pablo.alfred.standby';
 const LOG_LIMIT = 128 * 1024;
 const WAKE_WATCH_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+const AUDIO_INTERRUPTION = 'microphone stopped delivering audio; wake buffers cleared';
+const AUDIO_INTERRUPTION_RETRIES = 2;
 
 type Event = { type: 'ready' | 'listening' | 'idle' | 'clap' | 'wake' | 'paused' | 'cue' | 'error'; status?: string; detail?: unknown; message?: string };
 export type Launchctl = (command: string, args: string[]) => Promise<{ code: number; stdout: string; stderr: string }>;
 type Runner = typeof runProcess;
 export type StandbyPaths = ReturnType<typeof servicePaths>;
 export type StandbyState = { status: string; detail: string; updatedAt: string; lastAlertAt?: string };
-export type StandbyRunOptions = { helper?: string; maxCycles?: number; cue?: () => Promise<void>; runner?: Runner; signal?: AbortSignal };
+export type StandbyRunOptions = { helper?: string; maxCycles?: number; cue?: () => Promise<void>; runner?: Runner; signal?: AbortSignal; recoveryBackoffMs?: number };
 export function servicePaths(home = stateDirectory()) {
   const standby = join(home, 'standby');
   const launchAgents = process.env.ALFRED_LAUNCH_AGENTS_HOME || join(homedir(), 'Library', 'LaunchAgents');
@@ -101,7 +104,7 @@ export async function runStandby(paths = servicePaths(), options: StandbyRunOpti
       try {
         await writeState(paths, 'starting', 'Preparing local clap and Alfred wake detection.');
         const output = await cueOutput(paths.home);
-        const trigger = await runWakeWatchWithRetry(paths, helper, runner, controller.signal, options.cue ? false : scheduleCueNext, output);
+        const trigger = await runWakeWatchWithRetry(paths, helper, runner, controller.signal, options.cue ? false : scheduleCueNext, output, options.recoveryBackoffMs ?? 1000);
         scheduleCueNext = false;
         if (trigger) {
           await writeState(paths, 'starting', `${trigger} heard; microphone stopped for the cue.`);
@@ -168,13 +171,26 @@ async function clapStatus(paths: StandbyPaths, helper: string | undefined = unde
   }
 }
 
-async function runWakeWatchWithRetry(paths: StandbyPaths, helper: string, runner: Runner, signal?: AbortSignal, playCue = false, output = 'current'): Promise<string | undefined> {
-  try {
-    return await runWakeWatch(paths, helper, runner, signal, playCue, output);
-  } catch (error) {
-    if (!sleepTimeout(error)) throw error;
-    await writeState(paths, 'starting', 'Wake watch timed out after 24 hours; retrying once.');
-    return runWakeWatch(paths, helper, runner, signal, playCue, output);
+async function runWakeWatchWithRetry(paths: StandbyPaths, helper: string, runner: Runner, signal?: AbortSignal, playCue = false, output = 'current', recoveryBackoffMs = 1000): Promise<string | undefined> {
+  let timeoutRetried = false;
+  let audioRetries = 0;
+  for (;;) {
+    try {
+      return await runWakeWatch(paths, helper, runner, signal, playCue, output);
+    } catch (error) {
+      if (audioInterruption(error) && audioRetries < AUDIO_INTERRUPTION_RETRIES) {
+        audioRetries += 1;
+        await writeState(paths, 'starting', `Microphone input paused; recovering wake detector (${audioRetries}/${AUDIO_INTERRUPTION_RETRIES}).`);
+        await delay(recoveryBackoffMs, undefined, { signal });
+        continue;
+      }
+      if (sleepTimeout(error) && !timeoutRetried) {
+        timeoutRetried = true;
+        await writeState(paths, 'starting', 'Wake watch timed out after 24 hours; retrying once.');
+        continue;
+      }
+      throw error;
+    }
   }
 }
 
@@ -246,6 +262,7 @@ async function alert(paths: StandbyPaths, message: string): Promise<void> {
 }
 function detailText(value: unknown): string { return typeof value === 'string' ? value : value === undefined ? '' : JSON.stringify(value); }
 function sleepTimeout(error: unknown): boolean { return error instanceof Error && /timed out after 86400000 ms|timeout/i.test(error.message); }
+function audioInterruption(error: unknown): boolean { return error instanceof Error && error.message === AUDIO_INTERRUPTION; }
 function parseEvents(output: string): Event[] { return output.split('\n').flatMap((line) => { try { return line.trim() ? [JSON.parse(line) as Event] : []; } catch { return []; } }); }
 function domain(): string { return `gui/${process.getuid?.() ?? 0}`; }
 function serviceTarget(): string { return `${domain()}/${LABEL}`; }
