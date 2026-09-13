@@ -6,6 +6,8 @@ final class CodexVoiceHandoff {
   private let store: VoiceHandoffStore
   private let changed: () -> Void
   private var activeID: String?
+  private var ownedStart: VoiceHandoffStartReceipt?
+  private var pendingStart: VoiceHandoffStartReceipt?
 
   init(store: VoiceHandoffStore, changed: @escaping () -> Void) {
     self.store = store; self.changed = changed
@@ -51,12 +53,22 @@ final class CodexVoiceHandoff {
       self?.finish(request, error: "Codex voice did not become ready. Open a Codex task, then choose Start listening.")
     }
     if let threadURL = self.threadURL(for: request) {
+      let input: VoiceInputState
+      do { input = try CodexMicrophone.inputIsActive(in: url) ? .active : .inactive }
+      catch { input = .unknown(error.localizedDescription) }
+      if case .block(let detail) = VoiceStartDecision.forDedicatedTask(input) {
+        finish(request, error: detail)
+        return
+      }
       NSWorkspace.shared.open([threadURL], withApplicationAt: url, configuration: configuration) { [weak self] app, error in
         DispatchQueue.main.async {
           guard let self, self.activeID == request.id else { return }
           if let error { self.finish(request, error: "Could not open Codex task: \(error.localizedDescription)"); return }
           guard let app else { self.finish(request, error: "Codex did not open."); return }
-          self.waitForFocus(request, app: app, url: url, deadline: Date().addingTimeInterval(5))
+          DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self, self.activeID == request.id else { return }
+            self.waitForFocus(request, app: app, url: url, deadline: Date().addingTimeInterval(5))
+          }
         }
       }
       return
@@ -78,6 +90,10 @@ final class CodexVoiceHandoff {
     }
     guard let url = app.bundleURL ?? CodexApplication.installedURL() else {
       finish(request, error: "Could not locate the running Codex app.")
+      return
+    }
+    if case .block(let detail) = VoiceEndOwnershipDecision.forRunningCodex(request: request, ownedStart: ownedStart) {
+      finish(request, error: detail)
       return
     }
     let input: VoiceInputState
@@ -113,6 +129,7 @@ final class CodexVoiceHandoff {
       guard current(request), Self.permissionGranted else { finish(request, error: "Alfred voice control permission is unavailable."); return }
       do { try postVoiceShortcut(to: app.processIdentifier) }
       catch { finish(request, error: error.localizedDescription); return }
+      pendingStart = VoiceHandoffStartReceipt(requestId: request.id, threadId: request.threadId)
       waitForInput(request, url: url, deadline: Date().addingTimeInterval(8))
     } catch { finish(request, error: "Could not check Codex microphone: \(error.localizedDescription)") }
   }
@@ -136,7 +153,7 @@ final class CodexVoiceHandoff {
     guard runningCodexApplication() != nil else { finish(request, status: "ended", detail: "Codex is not running."); return }
     do {
       if try !CodexMicrophone.inputIsActive(in: appURL) {
-        finish(request, status: "ended", detail: "Codex voice ended.")
+        finish(request, status: "ended", detail: "Codex released its microphone after the stop request.")
         return
       }
     } catch { finish(request, error: "Could not confirm Codex voice ended: \(error.localizedDescription)"); return }
@@ -183,6 +200,9 @@ final class CodexVoiceHandoff {
   private func finish(_ request: VoiceHandoffRequest, status: String, detail: String) {
     guard activeID == request.id else { return }
     _ = try? store.finish(request.id, status: status, detail: detail)
+    if status == "started", pendingStart?.requestId == request.id { ownedStart = pendingStart }
+    if status == "ended" { ownedStart = nil }
+    if pendingStart?.requestId == request.id { pendingStart = nil }
     activeID = nil
     changed()
   }

@@ -32,6 +32,49 @@ public enum VoiceEndDecision: Equatable {
   }
 }
 
+
+public enum VoiceStartDecision: Equatable {
+  case continueToCodex
+  case block(String)
+
+  public static func forDedicatedTask(_ input: VoiceInputState) -> VoiceStartDecision {
+    switch input {
+    case .active:
+      return .block("End the current Codex voice call, then ask Alfred again.")
+    case .unknown(let detail):
+      let suffix = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+      return .block(suffix.isEmpty ? "Could not confirm Codex voice state. End the current call in Codex, then ask Alfred again." : "Could not confirm Codex voice state: \(suffix). End the current call in Codex, then ask Alfred again.")
+    case .inactive, .noCodexProcess:
+      return .continueToCodex
+    }
+  }
+}
+
+public struct VoiceHandoffStartReceipt: Equatable {
+  public let requestId: String
+  public let threadId: String?
+
+  public init(requestId: String, threadId: String?) {
+    self.requestId = requestId
+    self.threadId = threadId
+  }
+}
+
+public enum VoiceEndOwnershipDecision: Equatable {
+  case checkInput
+  case block(String)
+
+  public static func forRunningCodex(request: VoiceHandoffRequest, ownedStart: VoiceHandoffStartReceipt?) -> VoiceEndOwnershipDecision {
+    guard let ownedStart else {
+      return .block("Alfred has not started this Codex voice call. Open Codex and end the call there.")
+    }
+    if let requestedThread = request.threadId, requestedThread != ownedStart.threadId {
+      return .block("This stop request belongs to a different Alfred task. Open Codex and end the call there.")
+    }
+    return .checkInput
+  }
+}
+
 public struct VoiceHandoffRequest: Codable, Equatable {
   public let id: String
   public let status: String
