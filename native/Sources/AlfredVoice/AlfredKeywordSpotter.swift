@@ -32,9 +32,9 @@ final class AlfredKeywordSpotter: WakeKeywordSpotting {
     config.model_config.num_threads = 1
     config.model_config.provider = cstrings.copy("cpu")
     config.max_active_paths = 4
-    config.num_trailing_blanks = 1
+    config.num_trailing_blanks = 3
     config.keywords_score = 3.0
-    config.keywords_threshold = 0.20
+    config.keywords_threshold = 0.10
     config.keywords_file = cstrings.copy(paths.keywordsFile.path)
 
     guard let createdSpotter = SherpaOnnxCreateKeywordSpotter(&config) else {
