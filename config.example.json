@@ -4,5 +4,6 @@
   "permission": "full",
   "timeoutMs": 600000,
   "locale": "en-US",
-  "speak": true
+  "speak": true,
+  "cueOutput": "current"
 }
