@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key>
+  <string>AlfredVoice</string>
+  <key>CFBundleIdentifier</key>
+  <string>local.alfred.voice</string>
+  <key>CFBundleName</key>
+  <string>Alfred Voice</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>13.0</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Alfred listens only when you ask, so it can transcribe one spoken command locally.</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>Alfred uses Apple on-device speech recognition to turn one spoken command into text.</string>
+</dict>
+</plist>
