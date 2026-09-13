@@ -45,4 +45,5 @@ expect(handedOff.label == "Voice chat in Codex", "handoff label identifies the o
 let deadHandoff = try StandbySnapshot.decode(#"{"loaded":true,"running":false,"state":{"status":"handoff","detail":"Opening voice","updatedAt":"2026-09-13T04:50:00.000Z"},"detail":"Opening"}"#).menuState(now: now)
 expect(deadHandoff.kind == .blocked, "dead handoff process cannot claim to still be opening voice")
 try runVoiceHandoffTests()
+runVoiceTaskSelectionTests()
 print("AlfredMenuTests passed")

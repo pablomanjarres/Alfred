@@ -7,7 +7,7 @@ orders; the CLI is useful for saved recordings or a clap sensor.
 1. Build Alfred and run `npm run setup`.
 2. Run `alfred voice setup` once to create his dedicated Codex task.
 3. Choose Alfred under Settings > Pets. If needed, restart the app to reload pets.
-4. Wake Alfred and speak your order. His task carries the personality and voice controls.
+4. Wake Alfred and speak your order. Read the [voice personality limits](voice.md#personality-and-voice).
 
 The skill runs in the current task and uses its tools. It does not recursively
 launch another agent. The optional CLI calls `codex exec` and stores that session's
@@ -36,10 +36,13 @@ stays in `~/.alfred/companion.json`; its editable personality profile is
 `~/.alfred/companion/AGENTS.md`. Setup reuses the same task and preserves edits.
 Without companion setup, wake still uses the current task and its instructions.
 
-Alfred stops its microphone before sending **Control-Shift-V** to Codex. It sends
-the shortcut once and checks that Codex has opened input. Say “Goodbye, Alfred” to
-request the end of the call and restore wake listening. “Alfred, switch off” stops
-both. If you end a call with Codex's button, choose **Start listening** in Alfred.
+Alfred stops its microphone, confirms the selected task using **Copy chat deep
+link**, then sends **Control-Shift-V** once and checks that Codex has opened input.
+The speaking model has its own identity and voice. Alfred's task instructions
+do not replace that prompt. `alfred voice end` ends an owned call and restores
+wake listening; `alfred off` leaves it off. The task profile maps spoken requests
+to these commands, but the live voice may handle a farewell without invoking them.
+If you end a call with Codex's button, choose **Start listening** in Alfred.
 Microphone inactivity alone does not prove a call ended, so it never triggers rearming.
 
 This uses the documented [voice control](https://learn.chatgpt.com/docs/reference/commands)

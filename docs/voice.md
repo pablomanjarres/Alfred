@@ -1,6 +1,6 @@
 # Alfred Voice
 
-Alfred uses Codex for conversation and a local helper for the “Alfred” keyword and double clap. His dedicated task carries the butler personality and spoken controls.
+Alfred uses Codex for conversation and a local helper for the “Alfred” keyword and double clap. His dedicated task carries the instructions for Codex's work.
 
 ## Start
 
@@ -16,12 +16,23 @@ alfred standby start
 
 Allow Alfred's microphone and Accessibility permissions when macOS asks. Wake him, wait for the cue and Codex voice, then speak.
 
-| Say | Result |
+| Command | Result |
 | --- | --- |
-| “Goodbye, Alfred” or “hasta luego” | End the call and return to wake listening |
-| “Alfred, switch off” or “apágate” | End the call and leave wake listening off |
+| `alfred voice end` | End the owned call and return to wake listening |
+| `alfred off` | End the owned call and leave wake listening off |
 
-These requests use `alfred voice end` and `alfred off`. The menu sends one stop toggle while Codex is capturing input, then checks that input was released before rearming. An unknown or already inactive input blocks the toggle. Choosing Codex's stop button manually still requires **Start listening** in Alfred afterward.
+The task profile maps goodbye and switch-off requests to these commands. Codex's speaking layer may handle a farewell itself, so spoken invocation is not guaranteed. The menu sends one stop toggle while Codex is capturing input, then checks that input was released before rearming. An unknown or already inactive input blocks the toggle. Choosing Codex's stop button manually still requires **Start listening** in Alfred afterward.
+
+## Personality and voice
+
+Codex's built-in live voice uses a separate speaking prompt. The dedicated task's
+`AGENTS.md` controls task execution; it does not set the live voice's identity.
+Task navigation and a typed Alfred greeting do not verify spoken personality.
+
+Choose a stock voice in **Codex Settings > Voice**. That choice applies to new
+voice calls across the account. The inspected app has no supported persistent
+voice persona or custom voice for one task. A separate local Alfred voice layer
+would need its own speech recognizer and the same raw-audio privacy checks.
 
 ## Build
 
@@ -61,7 +72,7 @@ Exports:
 
 `alfred standby start` installs and starts `~/Library/LaunchAgents/com.pablo.alfred.standby.plist`. It waits for a double clap or “Alfred” and wakes the display. After a trigger, capture stops and its raw buffers are erased. Alfred plays the cue, then asks the signed menu app to open Codex voice in his configured task. It never forwards standby audio to Codex or transcription. Use `alfred standby stop` to unload it and `alfred standby status` to check it.
 
-Wake detection stays paused during the handoff. Codex exposes a voice toggle but no reliable external call-ended signal, so rearming requires an explicit end request or **Start listening**. A private request expires after 30 seconds and can be claimed only once. Cancelling standby invalidates it. Permission failures and a voice session that never opens the microphone produce a blocked state.
+Wake detection stays paused during the handoff. Before starting voice in a configured task, the menu confirms the selected task through Codex's **Copy chat deep link** command. It saves the clipboard once per handoff and restores recognized probe results while Codex stays in front and the result is unchanged. It blocks if selection cannot be confirmed. Codex exposes no reliable external call-ended signal, so rearming requires an explicit end request or **Start listening**. A private request expires after 30 seconds and can be claimed only once. Cancelling standby invalidates it. Permission failures and a voice session that never opens the microphone produce a blocked state.
 
 Standby state and bounded logs live under `~/.alfred/standby/` with user-only permissions. Logs contain timestamps, trigger/cue outcomes, frame counts, maximum buffer duration, and `rawAudio: erased`. They never contain raw samples. The native tap rejects buffers over 250 ms, computes local wake features, and wipes PCM buffers before neural decoding. Playback failures are reported instead of being hidden.
 
@@ -89,7 +100,7 @@ Explicit file transcription may require Speech Recognition permission. `voiceSta
 
 macOS can ask for Alfred's microphone permission even when Codex already has access. Allow it when using the menu's listening controls. The installed Alfred app includes the required microphone explanation and a signed bundle identity.
 
-Choose **Enable voice control** in Alfred's menu, then allow Alfred under **System Settings > Privacy & Security > Accessibility**. This lets the app send Codex's default **Control-Shift-V** voice shortcut. Codex needs its own microphone access and an open task. The handoff requires macOS 14.2 or later; wake detection still supports macOS 13. Keep the default Codex voice shortcut for this integration.
+Choose **Enable voice control** in Alfred's menu, then allow Alfred under **System Settings > Privacy & Security > Accessibility**. Keep Codex's default **Control-Shift-V** voice shortcut and **Command-Option-L** for **Copy chat deep link**. Codex needs its own microphone access and an open task. The handoff requires macOS 14.2 or later; wake detection still supports macOS 13.
 
 Run `npm run setup:menubar-signing` once before building the menu app. It creates Alfred's own local signing key and reuses it for later builds. Its private files stay under `~/Library/Application Support/Alfred/MenuBar/signing/`; no password entry is needed for normal builds. The installer rejects ad-hoc builds, which remain available for CI checks.
 
