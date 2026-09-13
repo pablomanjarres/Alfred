@@ -10,7 +10,7 @@ export const LABEL = 'com.pablo.alfred.standby';
 const LOG_LIMIT = 128 * 1024;
 const WAKE_WATCH_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 
-type Event = { type: 'ready' | 'listening' | 'idle' | 'clap' | 'wake' | 'paused' | 'error'; status?: string; detail?: unknown; message?: string };
+type Event = { type: 'ready' | 'listening' | 'idle' | 'clap' | 'wake' | 'paused' | 'cue' | 'error'; status?: string; detail?: unknown; message?: string };
 export type Launchctl = (command: string, args: string[]) => Promise<{ code: number; stdout: string; stderr: string }>;
 type Runner = typeof runProcess;
 export type StandbyPaths = ReturnType<typeof servicePaths>;
@@ -95,22 +95,26 @@ export async function runStandby(paths = servicePaths(), options: StandbyRunOpti
     if (!ready.ok && ready.detail.includes('notDetermined')) ready = await clapAuthorize(paths, helper, runner, controller.signal);
     if (!ready.ok) { await alert(paths, `Alfred standby blocked: ${ready.detail}`); return 0; }
     let cycles = 0;
+    let scheduleCueNext = false;
     while (!controller.signal.aborted && (options.maxCycles === undefined || cycles < options.maxCycles)) {
       cycles += 1;
       try {
         await writeState(paths, 'starting', 'Preparing local clap and Alfred wake detection.');
-        const trigger = await runWakeWatchWithRetry(paths, helper, runner, controller.signal);
+        const trigger = await runWakeWatchWithRetry(paths, helper, runner, controller.signal, options.cue ? false : scheduleCueNext);
+        scheduleCueNext = false;
         if (trigger) {
-          await logEvent(paths, { type: 'wake', status: trigger, detail: 'microphone stopped before cue' });
           await writeState(paths, 'starting', `${trigger} heard; microphone stopped for the cue.`);
-          try {
-            await (options.cue ?? (() => playCue(runner)))();
-            await logEvent(paths, { type: 'cue', status: 'played', detail: 'system cue completed' });
-            await writeState(paths, 'running', `${trigger} heard; cue played; re-arming standby.`);
-          } catch (error) {
-            const detail = error instanceof Error ? error.message : String(error);
-            await logEvent(paths, { type: 'cue', status: 'failed', detail });
-            throw new Error(`cue failed: ${detail}`);
+          if (options.cue) {
+            try {
+              await options.cue();
+              await logEvent(paths, { type: 'cue', status: 'played', detail: 'custom cue completed' });
+            } catch (error) {
+              const detail = error instanceof Error ? error.message : String(error);
+              await logEvent(paths, { type: 'cue', status: 'failed', detail });
+              throw new Error(`cue failed: ${detail}`);
+            }
+          } else {
+            scheduleCueNext = true;
           }
         }
       } catch (error) {
@@ -163,40 +167,45 @@ async function clapStatus(paths: StandbyPaths, helper: string | undefined = unde
   }
 }
 
-async function runWakeWatchWithRetry(paths: StandbyPaths, helper: string, runner: Runner, signal?: AbortSignal): Promise<string | undefined> {
+async function runWakeWatchWithRetry(paths: StandbyPaths, helper: string, runner: Runner, signal?: AbortSignal, playCue = false): Promise<string | undefined> {
   try {
-    return await runWakeWatch(paths, helper, runner, signal);
+    return await runWakeWatch(paths, helper, runner, signal, playCue);
   } catch (error) {
     if (!sleepTimeout(error)) throw error;
     await writeState(paths, 'starting', 'Wake watch timed out after 24 hours; retrying once.');
-    return runWakeWatch(paths, helper, runner, signal);
+    return runWakeWatch(paths, helper, runner, signal, playCue);
   }
 }
 
-async function runWakeWatch(paths: StandbyPaths, helper: string, runner: Runner, signal?: AbortSignal): Promise<string | undefined> {
+async function runWakeWatch(paths: StandbyPaths, helper: string, runner: Runner, signal?: AbortSignal, playCue = false): Promise<string | undefined> {
   let updates = Promise.resolve();
   let updateError: unknown;
+  const handled = new Set<string>();
   let result: Awaited<ReturnType<Runner>>;
   try {
-    result = await runner(helper, ['wake-watch'], {
+    result = await runner(helper, ['wake-watch', ...(playCue ? ['--cue'] : [])], {
       timeoutMs: WAKE_WATCH_TIMEOUT_MS, signal,
       onLine: (line) => {
+        const trimmed = line.trim();
         const event = parseEvents(line)[0];
-        const state = event?.type === 'ready' ? 'running' : event?.type === 'paused' ? 'paused' : undefined;
-        if (state) updates = updates.then(async () => {
-          const detail = detailText(event?.detail);
-          await writeState(paths, state, detail);
-          await logEvent(paths, { type: event.type, status: event.status ?? state, detail });
-        }).catch((error) => { updateError = error; });
+        if (!event) return;
+        handled.add(trimmed);
+        updates = updates.then(() => logHelperEvent(paths, event)).catch((error) => { updateError = error; });
       },
     });
   } finally { await updates; }
   if (updateError) throw updateError;
-  await appendLog(paths, result.stdout + result.stderr);
   const events = parseEvents(result.stdout);
+  for (const line of result.stdout.split('\n')) {
+    const trimmed = line.trim();
+    const event = parseEvents(line)[0];
+    if (event && !handled.has(trimmed)) await logHelperEvent(paths, event);
+  }
   const error = events.find((item) => item.type === 'error');
   if (error) throw new Error(detailText(error.message ?? error.detail ?? 'wake watch failed'));
   if (result.code !== 0) throw new Error(result.stderr || `wake watch exited with code ${result.code}`);
+  const unhandled = result.stdout.split('\n').filter((line) => line.trim() && !parseEvents(line)[0]).join('\n');
+  await appendLog(paths, (unhandled ? `${unhandled}\n` : '') + result.stderr);
   const wake = events.find((item) => item.type === 'wake');
   return wake ? wake.status || 'wake' : undefined;
 }
@@ -219,16 +228,20 @@ async function appendLog(paths: StandbyPaths, chunk: string): Promise<void> {
 async function logEvent(paths: StandbyPaths, event: { type: string; status?: string; detail?: string }): Promise<void> {
   await appendLog(paths, JSON.stringify({ ...event, at: new Date().toISOString() }) + '\n');
 }
+async function logHelperEvent(paths: StandbyPaths, event: Event): Promise<void> {
+  const detail = detailText(event.detail ?? event.message);
+  if (event.type === 'ready') await writeState(paths, 'running', detail);
+  else if (event.type === 'paused') await writeState(paths, 'paused', detail);
+  if (event.type === 'ready' || event.type === 'paused' || event.type === 'cue' || event.type === 'wake' || event.type === 'idle' || event.type === 'error') {
+    await logEvent(paths, { type: event.type, status: event.status ?? event.type, detail });
+  }
+}
 async function alert(paths: StandbyPaths, message: string): Promise<void> {
   const state = await readState(paths);
   const last = state?.lastAlertAt ? Date.parse(state.lastAlertAt) : 0;
   if (Date.now() - last < 30 * 60_000) return;
   await runProcess('/usr/bin/osascript', ['-e', `display notification ${JSON.stringify(message)} with title "Alfred"`], { timeoutMs: 10_000 }).catch(() => ({ code: 1, stdout: '', stderr: '' }));
   if (state) await writeFile(paths.state, JSON.stringify({ ...state, lastAlertAt: new Date().toISOString() }) + '\n', { mode: 0o600 });
-}
-export async function playCue(runner: Runner = runProcess): Promise<void> {
-  const result = await runner('/usr/bin/afplay', ['/System/Library/Sounds/Ping.aiff'], { timeoutMs: 10_000 });
-  if (result.code !== 0) throw new Error(result.stderr || `cue exited with code ${result.code}`);
 }
 function detailText(value: unknown): string { return typeof value === 'string' ? value : value === undefined ? '' : JSON.stringify(value); }
 function sleepTimeout(error: unknown): boolean { return error instanceof Error && /timed out after 86400000 ms|timeout/i.test(error.message); }
