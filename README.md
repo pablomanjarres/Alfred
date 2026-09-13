@@ -35,11 +35,12 @@ alfred ask "Check my calendar through Cortex"
 alfred doctor
 npm run build:voice
 alfred listen --speak
-alfred clap --loop --speak
+alfred standby start
 ```
 
-The optional macOS helper accepts microphone input and saved voice messages.
-It closes the microphone before Alfred acts or speaks.
+The optional macOS helper accepts one-shot microphone input and saved voice messages.
+It closes the microphone before Alfred acts or speaks. `alfred standby start` runs a
+login clap watcher only: it does not record, transcribe, or send standby audio to Codex.
 
 - Local commands use full access by default. Set `--permission read-only` to limit it.
 - Claps work while the computer is awake. Waking from system sleep needs an external sensor.

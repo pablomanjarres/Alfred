@@ -11,6 +11,7 @@ node scripts/build-voice.mjs
 The script builds the Swift package in `native/` and assembles `dist/AlfredVoice.app`. It also runs:
 
 - `AlfredVoice selftest`, which tests double-clap detection without the microphone.
+- `AlfredVoice clap-selftest`, which proves the clap watch event path and PCM buffer wiping without the microphone or Speech Recognition.
 - `AlfredVoice doctor`, which checks recognizer, microphone authorization state, and audio input availability without prompting. First-use permission state is reported but does not fail the build script.
 
 The helper can also run from `native/.build/release/AlfredVoice`. `src/voice.ts` discovers both locations relative to the compiled `dist/voice.js`; `ALFRED_VOICE_HELPER=/path/to/AlfredVoice` overrides discovery for tests and development.
@@ -33,13 +34,19 @@ Exports:
 
 `mode: 'listen'` records one spoken command. `mode: 'file'` transcribes one audio file and requires `file`. `mode: 'clap'` waits for a deliberate double clap, wakes the display with `caffeinate -u -t 3`, records one spoken command, emits one transcript, and exits.
 
-Run `alfred clap --loop` to stay on call. It rearms after each two-minute idle window and completed order. Ctrl-C, a permission failure, or another real error stops it. The microphone closes between windows and while Alfred acts or speaks.
+Run `alfred clap --loop` only when you explicitly want the CLI to wait for a clap and then capture one spoken order. It rearms after each two-minute idle window and completed order. Ctrl-C, a permission failure, or another real error stops it. The microphone closes between windows and while Alfred acts or speaks.
 
 Live capture lasts up to 12 seconds, then allows five seconds for Apple Speech to finish. Only a final transcript becomes an order; incomplete results are rejected.
 
+## Clap standby
+
+`alfred standby start` installs and starts `~/Library/LaunchAgents/com.pablo.alfred.standby.plist`. The standby service is clap-only: it waits for a deliberate double clap, wakes the display, plays a short cue, and immediately rearms. It never invokes Apple Speech, Codex, or transcription from the background service. Use `alfred standby stop` to unload it and `alfred standby status` to inspect the LaunchAgent plus the private state file.
+
+Standby state and bounded logs live under `~/.alfred/standby/` with user-only permissions. The log contains JSON status lines and scalar proof such as frame counts, last-frame timestamps, and maximum buffer duration. It never logs raw samples. The native tap uses 1024-frame chunks, rejects buffers over one second, computes only RMS/peak clap features, and wipes all float PCM channels before returning from the tap.
+
 ## Permissions
 
-The first real listening action may trigger macOS prompts for Microphone and Speech Recognition. `voiceStatus()` and `AlfredVoice doctor` do not prompt; they only report the current state. `voiceStatus()` returns `available: false` until Speech Recognition and Microphone are authorized.
+The first real listening action may trigger macOS prompts for Microphone and Speech Recognition. `voiceStatus()` and `AlfredVoice doctor` do not prompt; they only report the current state. `voiceStatus()` returns `available: false` until Speech Recognition and Microphone are authorized. Clap standby is separate: it gates only on Microphone authorization and live audio input because it does not use Speech Recognition.
 
 The bundled app plist explains the privacy reasons:
 
