@@ -13,6 +13,7 @@ export function handoffPath(paths: StandbyPaths): string { return join(paths.sta
 export function handoffCancelledPath(paths: StandbyPaths): string { return join(paths.standby, 'handoff-cancelled.json'); }
 
 export async function requestVoiceHandoff(options: { paths: StandbyPaths; runner?: Runner; signal?: AbortSignal; id?: () => string; now?: () => Date; ttlMs?: number; timeoutMs?: number; pollMs?: number }): Promise<HandoffRecord> {
+  options.signal?.throwIfAborted();
   const runner = options.runner ?? runProcess;
   const now = options.now?.() ?? new Date();
   const id = options.id?.() ?? randomUUID();
@@ -45,13 +46,15 @@ export async function markHandoff(paths: StandbyPaths, id: string, status: 'star
   return next;
 }
 
-export async function cancelHandoff(paths: StandbyPaths, id?: string): Promise<void> {
+export async function cancelHandoff(paths: StandbyPaths, id?: string, options: { afterTombstone?: () => Promise<void> } = {}): Promise<void> {
   const current = await readHandoff(paths);
   const target = id ?? current?.id;
   if (!target) return;
   await writeRecord(handoffCancelledPath(paths), { id: target });
-  if (current?.id === target && (current.status === 'pending' || current.status === 'claimed')) {
-    await writeRecord(handoffPath(paths), { ...current, status: 'cancelled' });
+  await options.afterTombstone?.();
+  const latest = await readHandoff(paths);
+  if (latest?.id === target && (latest.status === 'pending' || latest.status === 'claimed')) {
+    await writeRecord(handoffPath(paths), { ...latest, status: 'cancelled' });
   }
 }
 
@@ -59,7 +62,9 @@ async function waitForOutcome(paths: StandbyPaths, id: string, signal: AbortSign
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     signal?.throwIfAborted();
+    if (await tombstoned(paths, id)) throw new Error('Codex voice handoff was cancelled.');
     const current = await readHandoff(paths);
+    if (current && current.id !== id) throw new Error('Codex voice handoff request was replaced.');
     if (current?.id === id) {
       if (current.status === 'started') return current;
       if (current.status === 'blocked') throw new Error(current.detail || 'Codex voice handoff blocked.');

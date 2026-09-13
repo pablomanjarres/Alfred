@@ -125,6 +125,7 @@ export async function runStandby(paths = servicePaths(), options: StandbyRunOpti
             scheduleCueNext = true;
           } else {
             await playWakeCue(paths, helper, runner, controller.signal, output);
+            await writeState(paths, 'handoff', `${trigger} heard; opening Codex voice.`);
             if (typeof options.handoff === 'function') await options.handoff(trigger);
             else await requestVoiceHandoff({ paths, runner, signal: controller.signal });
             await writeState(paths, 'handed-off', 'Voice chat is in Codex. Choose Start listening after ending the call.');
