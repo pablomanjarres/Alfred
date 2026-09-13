@@ -18,5 +18,12 @@ func runVoiceTaskSelectionTests() {
   expect(!confirms("https://example.com/\(target)"), "unrelated URLs cannot acknowledge a task")
   expect(!confirms("codex://threads/new?prompt=\(target)"), "a new-task composer does not acknowledge the existing task")
   expect(!confirms("codex://threads/\(target)/extra"), "extra task path segments cannot acknowledge a task")
+
+  expect(VoiceTaskSelection.canRestoreProbeResult(threadId: target, copiedLink: expectedLink, clipboardChanged: true, appIsFrontmost: true, clipboardUnchangedSinceProbe: true), "confirmed fresh task link can restore the probe clipboard")
+  expect(!VoiceTaskSelection.canRestoreProbeResult(threadId: target, copiedLink: expectedLink, clipboardChanged: true, appIsFrontmost: true, clipboardUnchangedSinceProbe: false), "concurrent clipboard changes prevent probe restoration and voice dispatch")
+  expect(!VoiceTaskSelection.canRestoreProbeResult(threadId: target, copiedLink: previousLink, clipboardChanged: true, appIsFrontmost: true, clipboardUnchangedSinceProbe: true), "mismatched task link cannot restore as a successful probe")
+  expect(VoiceTaskSelection.canRestoreProbeClipboard(copiedLink: previousLink, clipboardChanged: true, appIsFrontmost: true, clipboardUnchangedSinceProbe: true), "fresh wrong-task probe links can be restored before refusing voice dispatch")
+  expect(!VoiceTaskSelection.canRestoreProbeClipboard(copiedLink: "notes", clipboardChanged: true, appIsFrontmost: true, clipboardUnchangedSinceProbe: true), "unrelated clipboard changes are not treated as restorable probe output")
+  expect(!VoiceTaskSelection.canRestoreProbeClipboard(copiedLink: previousLink, clipboardChanged: true, appIsFrontmost: true, clipboardUnchangedSinceProbe: false), "wrong-task probe links cannot overwrite concurrent clipboard changes")
   print("VoiceTaskSelectionTests passed")
 }
