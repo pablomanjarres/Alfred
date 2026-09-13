@@ -46,7 +46,8 @@ func runVoiceHandoffTests() throws {
   } else { expect(false, "unknown Codex input must block dedicated start") }
 
   let ownedThread = "44444444-4444-4444-8444-444444444444"
-  let launchDate = Date(timeIntervalSince1970: 1_789_275_100.125)
+  // This fractional reference-date value changes precision when stored as a Unix timestamp.
+  let launchDate = Date(timeIntervalSinceReferenceDate: 800_000_000.1234566)
   let sameProcess = VoiceCodexProcessIdentity(processID: 1234, launchDate: launchDate)
   let ownedStart = VoiceHandoffStartReceipt(requestId: "55555555-5555-4555-8555-555555555555", threadId: ownedThread, codexProcessID: 1234, codexLaunchDate: launchDate)
   let matchingEnd = VoiceHandoffRequest(id: UUID().uuidString, status: "pending", requestedAt: now, expiresAt: now.addingTimeInterval(30), action: .end, threadId: ownedThread)
@@ -98,9 +99,9 @@ func runVoiceHandoffTests() throws {
   try checkHandoff(abs((reloadedReceipt?.codexLaunchDate.timeIntervalSince1970 ?? 0) - launchDate.timeIntervalSince1970) < 0.000_001, "fractional Codex launch time survives receipt encoding")
   let sessionAttrs = try FileManager.default.attributesOfItem(atPath: directory.appendingPathComponent("voice-session.json").path)
   expect((sessionAttrs[.posixPermissions] as? NSNumber)?.intValue == 0o600, "voice session receipt remains private")
-  expect(VoiceEndOwnershipDecision.forRunningCodex(request: matchingEnd, ownedStart: persistentReceipt, currentProcess: sameProcess) == .checkInput, "matching process identity can end the owned call")
+  expect(VoiceEndOwnershipDecision.forRunningCodex(request: matchingEnd, ownedStart: reloadedReceipt, currentProcess: sameProcess) == .checkInput, "matching process identity can end the owned call after receipt reload")
   let relaunchedProcess = VoiceCodexProcessIdentity(processID: 1234, launchDate: launchDate.addingTimeInterval(1))
-  if case .block(let relaunchedDetail) = VoiceEndOwnershipDecision.forRunningCodex(request: matchingEnd, ownedStart: persistentReceipt, currentProcess: relaunchedProcess) {
+  if case .block(let relaunchedDetail) = VoiceEndOwnershipDecision.forRunningCodex(request: matchingEnd, ownedStart: reloadedReceipt, currentProcess: relaunchedProcess) {
     expect(relaunchedDetail.contains("different Codex app session"), "restarted Codex process invalidates old ownership")
   } else { expect(false, "restarted Codex process must not reuse an old receipt") }
   let badReceipt = directory.appendingPathComponent("voice-session.json")
