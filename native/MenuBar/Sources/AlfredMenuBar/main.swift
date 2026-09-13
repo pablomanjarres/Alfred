@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Darwin
 import AlfredMenuCore
 
 let appId = "com.pablo.alfred.menubar"
@@ -10,27 +11,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private var config: AlfredCLIConfig?
   private var lastState = MenuState(kind: .starting, detail: "Loading Alfred status…", micIndicator: false)
   private var timer: Timer?
+  private var polling = false
+  private var pollGeneration = 0
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     if NSRunningApplication.runningApplications(withBundleIdentifier: appId).contains(where: { $0.processIdentifier != getpid() }) { NSApp.terminate(nil) }
     config = try? AlfredCLIConfig.load(from: configURL())
     statusItem.button?.title = "🎩"
     rebuildMenu()
-    refreshStatus()
+    refreshStatus(force: true)
     timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.refreshStatus() }
   }
 
-  @objc private func refreshStatus() {
-    guard let config else { setError("Missing Alfred menu config. Run npm run install:menubar."); return }
+  @objc private func refreshStatus() { refreshStatus(force: false) }
+
+  private func refreshStatus(force: Bool) {
+    guard let config else { setError("Missing Alfred menu config. Run npm run install:menubar."); rebuildMenu(); return }
+    if polling && !force { return }
+    pollGeneration += 1
+    let generation = pollGeneration
+    polling = true
     runAlfred(["standby", "status"], config: config, timeout: 10) { [weak self] result in
       DispatchQueue.main.async {
+        guard let self, self.pollGeneration == generation else { return }
+        self.polling = false
         switch result {
         case .success(let output):
-          do { self?.lastState = try StandbySnapshot.decode(output).menuState() }
-          catch { self?.setError("Could not read standby status: \(error.localizedDescription)") }
-        case .failure(let error): self?.setError(error.localizedDescription)
+          do { self.lastState = try StandbySnapshot.decode(output).menuState() }
+          catch { self.setError("Could not read standby status: \(error.localizedDescription)") }
+        case .failure(let error): self.setError(error.localizedDescription)
         }
-        self?.rebuildMenu()
+        self.rebuildMenu()
       }
     }
   }
@@ -59,12 +70,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   private func command(_ args: [String], timeout: TimeInterval) {
     guard let config else { setError("Missing Alfred menu config. Run npm run install:menubar."); return }
-    lastState = MenuState(kind: .starting, detail: "Running alfred \(args.joined(separator: " "))…", micIndicator: false)
+    lastState = MenuState(kind: .starting, detail: args.contains("stop") ? "Stopping listener…" : "Starting listener…", micIndicator: false)
     rebuildMenu()
     runAlfred(args, config: config, timeout: timeout) { [weak self] result in
       DispatchQueue.main.async {
         if case .failure(let error) = result { self?.setError(error.localizedDescription) }
-        self?.refreshStatus()
+        self?.refreshStatus(force: true)
       }
     }
   }
@@ -80,7 +91,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let detail = NSMenuItem(title: lastState.detail, action: nil, keyEquivalent: "")
     detail.isEnabled = false
     menu.addItem(detail)
-    let privacy = NSMenuItem(title: "No recordings. No transcript or audio history.", action: nil, keyEquivalent: "")
+    let privacy = NSMenuItem(title: "Wake detection saves no audio.", action: nil, keyEquivalent: "")
     privacy.isEnabled = false
     menu.addItem(privacy)
     menu.addItem(.separator())
@@ -109,7 +120,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       do { try process.run() } catch { done(.failure(MenuError("Could not start Alfred: \(error.localizedDescription)"))); return }
       let deadline = Date().addingTimeInterval(timeout)
       while process.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
-      if process.isRunning { process.terminate(); Thread.sleep(forTimeInterval: 0.3); if process.isRunning { process.interrupt() } }
+      if process.isRunning { killProcess(process) }
       process.waitUntilExit()
       let output = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
       let errors = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
@@ -135,22 +146,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     """
     try? FileManager.default.createDirectory(at: loginPlistURL().deletingLastPathComponent(), withIntermediateDirectories: true)
     try? plist.write(to: loginPlistURL(), atomically: true, encoding: .utf8)
-    _ = runLaunchctl(["bootout", "gui/\(getuid())/\(loginLabel)"], timeout: 5)
-    _ = runLaunchctl(["bootstrap", "gui/\(getuid())", loginPlistURL().path], timeout: 5)
   }
-  private func disableLogin() {
-    _ = runLaunchctl(["bootout", "gui/\(getuid())/\(loginLabel)"], timeout: 5)
-    try? FileManager.default.removeItem(at: loginPlistURL())
-  }
-  private func runLaunchctl(_ args: [String], timeout: TimeInterval) -> Bool {
-    let process = Process(); process.executableURL = URL(fileURLWithPath: "/bin/launchctl"); process.arguments = args
-    do { try process.run() } catch { return false }
-    let deadline = Date().addingTimeInterval(timeout)
-    while process.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
-    if process.isRunning { process.terminate() }
-    process.waitUntilExit()
-    return process.terminationStatus == 0
-  }
+  private func disableLogin() { try? FileManager.default.removeItem(at: loginPlistURL()) }
+}
+
+func killProcess(_ process: Process) {
+  process.terminate()
+  let grace = Date().addingTimeInterval(0.5)
+  while process.isRunning && Date() < grace { Thread.sleep(forTimeInterval: 0.05) }
+  if process.isRunning { kill(process.processIdentifier, SIGKILL) }
 }
 
 struct MenuError: LocalizedError {
