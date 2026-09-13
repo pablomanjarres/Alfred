@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -7,6 +8,25 @@ import { prepareCompanion, readCompanion } from '../src/companion.ts';
 import { parseConfig } from '../src/config.ts';
 
 const threadId = 'a1dd3451-6be9-4043-981a-fac11483f5a4';
+
+test('generated controls preserve custom state and literal executable paths', async () => {
+  const home = await mkdtemp(join(tmpdir(), "alfred companion's $()-"));
+  const executable = join(home, "fake alfred's cli");
+  try {
+    await writeFile(executable, '#!/usr/bin/env node\nconsole.log(JSON.stringify({ home: process.env.ALFRED_HOME, args: process.argv.slice(2) }));\n');
+    await chmod(executable, 0o755);
+    const companion = await prepareCompanion(parseConfig({}), {
+      home, executable, create: async () => ({ answer: 'Ready', sessionId: threadId }),
+    });
+    const profile = await readFile(join(companion.cwd, 'AGENTS.md'), 'utf8');
+    const control = profile.match(/run `([^`]+ voice end)`/)?.[1];
+    assert.ok(control?.includes('ALFRED_HOME='));
+    assert.ok(control.includes('fake alfred'));
+    const result = spawnSync('/bin/sh', ['-c', control], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), { home, args: ['voice', 'end'] });
+  } finally { await rm(home, { recursive: true, force: true }); }
+});
 
 test('companion setup uses a private workspace and reuses its task', async () => {
   const home = await mkdtemp(join(tmpdir(), 'alfred-companion-'));
