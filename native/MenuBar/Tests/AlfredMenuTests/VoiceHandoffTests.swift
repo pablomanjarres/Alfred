@@ -37,6 +37,32 @@ func runVoiceHandoffTests() throws {
     expect(unknownDetail.contains("Could not confirm Codex voice state"), "unknown input blocks with actionable detail")
   } else { expect(false, "unknown input must block") }
 
+  expect(VoiceStartDecision.forDedicatedTask(.inactive) == .continueToCodex, "dedicated start can navigate when Codex input is inactive")
+  if case .block(let activeStartDetail) = VoiceStartDecision.forDedicatedTask(.active) {
+    expect(activeStartDetail.contains("End the current Codex voice call"), "dedicated start blocks an active Codex call before navigation")
+  } else { expect(false, "active Codex input must block dedicated start") }
+  if case .block(let unknownStartDetail) = VoiceStartDecision.forDedicatedTask(.unknown("metadata unavailable")) {
+    expect(unknownStartDetail.contains("Could not confirm Codex voice state"), "dedicated start blocks unknown input before navigation")
+  } else { expect(false, "unknown Codex input must block dedicated start") }
+
+  let ownedThread = "44444444-4444-4444-8444-444444444444"
+  let ownedStart = VoiceHandoffStartReceipt(requestId: "55555555-5555-4555-8555-555555555555", threadId: ownedThread)
+  let matchingEnd = VoiceHandoffRequest(id: UUID().uuidString, status: "pending", requestedAt: now, expiresAt: now.addingTimeInterval(30), action: .end, threadId: ownedThread)
+  expect(VoiceEndOwnershipDecision.forRunningCodex(request: matchingEnd, ownedStart: ownedStart) == .checkInput, "matching owned call can check input before ending")
+  let unscopedEnd = VoiceHandoffRequest(id: UUID().uuidString, status: "pending", requestedAt: now, expiresAt: now.addingTimeInterval(30), action: .end)
+  expect(VoiceEndOwnershipDecision.forRunningCodex(request: unscopedEnd, ownedStart: ownedStart) == .checkInput, "owned current call can end without a repeated thread id")
+  if case .block(let missingOwnerDetail) = VoiceEndOwnershipDecision.forRunningCodex(request: matchingEnd, ownedStart: nil) {
+    expect(missingOwnerDetail.contains("Alfred has not started"), "end blocks without an Alfred-owned start")
+  } else { expect(false, "running Codex end must require ownership") }
+  let mismatchedEnd = VoiceHandoffRequest(id: UUID().uuidString, status: "pending", requestedAt: now, expiresAt: now.addingTimeInterval(30), action: .end, threadId: "66666666-6666-4666-8666-666666666666")
+  if case .block(let mismatchDetail) = VoiceEndOwnershipDecision.forRunningCodex(request: mismatchedEnd, ownedStart: ownedStart) {
+    expect(mismatchDetail.contains("different Alfred task"), "end blocks a mismatched thread id")
+  } else { expect(false, "mismatched end must block") }
+  let legacyOwnedStart = VoiceHandoffStartReceipt(requestId: "77777777-7777-4777-8777-777777777777", threadId: nil)
+  if case .block(let legacyMismatchDetail) = VoiceEndOwnershipDecision.forRunningCodex(request: matchingEnd, ownedStart: legacyOwnedStart) {
+    expect(legacyMismatchDetail.contains("different Alfred task"), "threaded end blocks a legacy owned receipt")
+  } else { expect(false, "threaded end must not match unscoped ownership") }
+
   let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
   defer { try? FileManager.default.removeItem(at: directory) }
   let store = VoiceHandoffStore(directory: directory)
