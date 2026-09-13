@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util';
 import { resolve } from 'node:path';
-import { loadConfig, stateDirectory, type Config } from './config.js';
+import { loadConfig, saveCueOutput, stateDirectory, type Config, type CueOutput } from './config.js';
 import { executeOrder } from './assistant.js';
 import { receipts } from './history.js';
 import { runProcess } from './process.js';
 import { ClapIdleError, transcribe, speak } from './voice.js';
 import { doctor } from './doctor.js';
 import { installService, serviceStatus, startService, stopService } from './standby.js';
+import { cueSummary, testCue } from './cue.js';
 
 const HELP = `Alfred, at your service.
 
@@ -15,13 +16,15 @@ const HELP = `Alfred, at your service.
   alfred ask "your order"             Run an order through your Codex account
   alfred transcribe /path/message.m4a Execute a saved voice message
   alfred history                     Show the ten latest local receipts
-  alfred standby start|stop|status    Manage login clap-only standby
+  alfred standby start|stop|status    Manage login wake standby
+  alfred cue output current|speakers   Choose where Alfred plays wake cues
+  alfred cue test                      Play one wake cue safely
   alfred doctor                      Check account, tools, voice, and pet
 
 Options: --cwd PATH, --permission full|workspace|read-only, --model NAME,
          --locale en-US|es-CO, --speak, --new, --loop, --help
 --new starts a fresh Codex conversation.
-Use Codex desktop's voice button for spoken orders. Alfred standby only detects claps.
+Use Codex desktop's voice button for spoken orders. Alfred standby detects double claps or “Alfred”.
 Config: ~/.alfred/config.json. Local receipts: ~/.alfred/history/.
 `;
 
@@ -39,13 +42,30 @@ async function main() {
   if (values.model) overrides.model = values.model;
   if (values.locale) overrides.locale = values.locale;
   if (values.speak !== undefined) overrides.speak = values.speak;
-  const config = await loadConfig(overrides);
   const controller = new AbortController();
   const cancel = () => controller.abort();
   process.once('SIGINT', cancel);
   process.once('SIGTERM', cancel);
   const { signal } = controller;
   try {
+    if (command === 'cue') {
+      const action = positionals.shift();
+      if (action === 'output') {
+        const mode = positionals.shift();
+        if (!mode || positionals.length || !['current', 'speakers'].includes(mode)) throw new Error('Use cue output current or speakers.');
+        await saveCueOutput(mode as CueOutput);
+        console.log(`Alfred wake cues will use ${mode}.`);
+        return;
+      }
+      if (action === 'test' && positionals.length === 0) {
+        const config = await loadConfig(overrides);
+        const cue = await testCue({ mode: config.cueOutput, signal });
+        console.log(`Alfred wake cue played through ${config.cueOutput}: ${cueSummary(cue)}.`);
+        return;
+      }
+      throw new Error('Use cue output current|speakers or cue test.');
+    }
+    const config = await loadConfig(overrides);
     if (values.loop && command !== 'clap') throw new Error('--loop is available only with clap.');
     if (command === 'standby') {
       const action = positionals.shift();
@@ -96,6 +116,7 @@ async function main() {
     process.removeListener('SIGTERM', cancel);
   }
 }
+
 
 main().catch((error) => {
   console.error(`Alfred: ${error instanceof Error ? error.message : String(error)}`);

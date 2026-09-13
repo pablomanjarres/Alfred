@@ -13,6 +13,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private var timer: Timer?
   private var polling = false
   private var pollGeneration = 0
+  private var busyAction: BusyAction?
+  private var commandErrorUntil: Date?
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     if NSRunningApplication.runningApplications(withBundleIdentifier: appId).contains(where: { $0.processIdentifier != getpid() }) { NSApp.terminate(nil) }
@@ -27,6 +29,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   private func refreshStatus(force: Bool) {
     guard let config else { setError("Missing Alfred menu config. Run npm run install:menubar."); rebuildMenu(); return }
+    if busyAction != nil { return }
+    if !force, let commandErrorUntil, Date() < commandErrorUntil { return }
     if polling && !force { return }
     pollGeneration += 1
     let generation = pollGeneration
@@ -48,6 +52,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   @objc private func startListener() { command(["standby", "start"], timeout: 95) }
   @objc private func stopListener() { command(["standby", "stop"], timeout: 20) }
+  @objc private func testWakeSound() { command(["cue", "test"], timeout: 95, busy: .cueTest) }
+  @objc private func useCurrentOutput() { command(["cue", "output", "current"], timeout: 20, busy: .cueOutput) }
+  @objc private func useSpeakersOutput() { command(["cue", "output", "speakers"], timeout: 20, busy: .cueOutput) }
   @objc private func quitUI() { NSApp.terminate(nil) }
 
   @objc private func openCodex() {
@@ -68,14 +75,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     rebuildMenu()
   }
 
-  private func command(_ args: [String], timeout: TimeInterval) {
-    guard let config else { setError("Missing Alfred menu config. Run npm run install:menubar."); return }
-    lastState = MenuState(kind: .starting, detail: args.contains("stop") ? "Stopping listener…" : "Starting listener…", micIndicator: false)
+  private func command(_ args: [String], timeout: TimeInterval, busy: BusyAction = .listener) {
+    guard busyAction == nil else { return }
+    guard let config else { setError("Missing Alfred menu config. Run npm run install:menubar."); rebuildMenu(); return }
+    pollGeneration += 1
+    polling = false
+    busyAction = busy
+    commandErrorUntil = nil
+    lastState = MenuState(kind: .starting, detail: busy.detail(args: args), micIndicator: false, cueOutput: lastState.cueOutput)
     rebuildMenu()
     runAlfred(args, config: config, timeout: timeout) { [weak self] result in
       DispatchQueue.main.async {
-        if case .failure(let error) = result { self?.setError(error.localizedDescription) }
-        self?.refreshStatus(force: true)
+        guard let self else { return }
+        self.busyAction = nil
+        switch result {
+        case .success: self.refreshStatus(force: true)
+        case .failure(let error):
+          self.commandErrorUntil = Date().addingTimeInterval(20)
+          self.setError(error.localizedDescription)
+          self.rebuildMenu()
+        }
       }
     }
   }
@@ -85,6 +104,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     statusItem.button?.toolTip = "Alfred standby menu"
     statusItem.button?.setAccessibilityLabel("Alfred standby menu")
     let menu = NSMenu()
+    menu.autoenablesItems = false
     let status = NSMenuItem(title: lastState.label, action: nil, keyEquivalent: "")
     status.isEnabled = false
     menu.addItem(status)
@@ -95,8 +115,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     privacy.isEnabled = false
     menu.addItem(privacy)
     menu.addItem(.separator())
-    menu.addItem(NSMenuItem(title: "Start Listener", action: #selector(startListener), keyEquivalent: "s"))
-    menu.addItem(NSMenuItem(title: "Stop Listener", action: #selector(stopListener), keyEquivalent: "x"))
+    let busy = busyAction != nil
+    menu.addItem(actionItem("Start listening", action: #selector(startListener), key: "s", enabled: !busy))
+    menu.addItem(actionItem("Stop listening", action: #selector(stopListener), key: "x", enabled: !busy))
+    menu.addItem(actionItem("Test wake sound", action: #selector(testWakeSound), key: "t", enabled: !busy))
+    let output = NSMenuItem(title: "Wake sound output", action: nil, keyEquivalent: "")
+    output.isEnabled = !busy
+    let outputMenu = NSMenu()
+    outputMenu.autoenablesItems = false
+    let current = actionItem("Current audio output", action: #selector(useCurrentOutput), enabled: !busy)
+    current.state = lastState.cueOutput == .current ? .on : .off
+    let speakers = actionItem("Mac speakers", action: #selector(useSpeakersOutput), enabled: !busy)
+    speakers.state = lastState.cueOutput == .speakers ? .on : .off
+    outputMenu.addItem(current)
+    outputMenu.addItem(speakers)
+    output.submenu = outputMenu
+    menu.addItem(output)
     menu.addItem(NSMenuItem(title: "Open Codex", action: #selector(openCodex), keyEquivalent: "o"))
     let login = NSMenuItem(title: "Launch at Login", action: #selector(toggleLogin), keyEquivalent: "l")
     login.state = isLoginEnabled() ? .on : .off
@@ -106,8 +140,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     statusItem.menu = menu
   }
 
+  private func actionItem(_ title: String, action: Selector, key: String = "", enabled: Bool = true) -> NSMenuItem {
+    let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+    item.isEnabled = enabled
+    return item
+  }
+
   private func setError(_ message: String) {
-    lastState = MenuState(kind: .blocked, detail: message, micIndicator: false)
+    lastState = MenuState(kind: .blocked, detail: message, micIndicator: false, cueOutput: lastState.cueOutput)
   }
 
   private func runAlfred(_ args: [String], config: AlfredCLIConfig, timeout: TimeInterval, done: @escaping (Result<String, MenuError>) -> Void) {
@@ -189,6 +229,20 @@ struct MenuError: LocalizedError {
   let message: String
   init(_ message: String) { self.message = message }
   var errorDescription: String? { message }
+}
+
+enum BusyAction {
+  case listener
+  case cueOutput
+  case cueTest
+
+  func detail(args: [String]) -> String {
+    switch self {
+    case .listener: return args.contains("stop") ? "Stopping listening…" : "Starting listening…"
+    case .cueOutput: return "Saving wake sound output…"
+    case .cueTest: return "Testing wake sound…"
+    }
+  }
 }
 
 @main

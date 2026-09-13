@@ -6,6 +6,7 @@ struct Options {
   var locale = Locale.current.identifier
   var file: String?
   var cue = false
+  var cueOutput: CueOutputMode = .current
 }
 func emit(_ type: String, _ fields: [String: Any] = [:]) {
   var object = fields
@@ -49,6 +50,11 @@ func parseOptions() -> Options {
     case "--cue":
       guard options.command == "wake-watch" else { fail("--cue requires wake-watch") }
       options.cue = true
+    case "--cue-output":
+      guard ["wake-watch", "wake-cue"].contains(options.command) else { fail("--cue-output requires wake-watch or wake-cue") }
+      index += 1
+      guard index < args.count, let output = CueOutputMode(rawValue: args[index]) else { fail("--cue-output must be current or speakers") }
+      options.cueOutput = output
     default:
       fail("unknown argument \(args[index])")
     }
@@ -343,8 +349,9 @@ case "clap-doctor": clapDoctor()
 case "selftest": selftest()
 case "clap-selftest": clapPrivacySelftest()
 case "wake-audio-selftest": wakeAudioSelftest()
+case "cue-selftest": cueOutputSelftest()
 case "wake-cue":
-  do { try playWakeCue() } catch { fail(String(describing: error)) }
+  do { try playWakeCue(output: options.cueOutput) } catch { fail(String(describing: error)) }
 case "wake-watch", "wake-file":
   do {
     guard let resources = Bundle.main.resourceURL else {
@@ -352,7 +359,7 @@ case "wake-watch", "wake-file":
     }
     let keyword = try AlfredKeywordSpotter(resourcesDirectory: resources)
     if options.command == "wake-watch" {
-      _ = try waitForWake(using: keyword, cueBeforeListening: options.cue)
+      _ = try waitForWake(using: keyword, cueBeforeListening: options.cue, cueOutput: options.cueOutput)
     }
     else {
       guard let file = options.file else {

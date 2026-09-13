@@ -12,6 +12,7 @@ The script builds the Swift package in `native/` and assembles `dist/AlfredVoice
 
 - `AlfredVoice selftest`, which tests double-clap detection without the microphone.
 - `AlfredVoice clap-selftest`, which proves the clap watch event path and PCM buffer wiping without the microphone or Speech Recognition.
+- `AlfredVoice cue-selftest`, which checks output selection and muted devices without playing sound or opening the microphone.
 - Packaged keyword checks with pinned, generated voices, including similar names that must stay quiet. Extracted test copies are deleted afterward; the fixtures contain no microphone recordings.
 - `AlfredVoice doctor`, which checks recognizer, microphone authorization state, and audio input availability without prompting. First-use permission state is reported but does not fail the build script.
 
@@ -43,6 +44,20 @@ Standby state and bounded logs live under `~/.alfred/standby/` with user-only pe
 
 Before capture, the keyword detector warms up with generated silence. A competing “Alfredo” entry helps reject that similar name; it never activates Alfred. After a short quiet pause, a fresh recognition stream starts while the previous stream finishes the word ending. At most two streams share the model, and both receive only the same short, erased audio chunks.
 
+## Wake sound
+
+Use **Test wake sound** in the menu to check playback without clapping. It pauses standby for the sound and restores listening afterward, including when playback fails. **Wake sound output** chooses your current audio output or the Mac's built-in speakers. It leaves the system's default output unchanged.
+
+```sh
+alfred cue output speakers
+alfred cue test
+alfred cue output current
+```
+
+The default is `current`. The choice is saved in `~/.alfred/config.json` as `cueOutput`. A muted or zero-volume device produces a clear error; Alfred does not change its volume. The test reports the device and playback level. Playback completion confirms the device received the sound, but cannot prove you heard it.
+
+The wake cue follows model preparation, which can take a few seconds after detection. Its end marks the point when the next listener starts. Wait for the sound to finish before calling Alfred again.
+
 ## Permissions
 
 Explicit file transcription may require Speech Recognition permission. `voiceStatus()` and `AlfredVoice doctor` do not prompt; they only report the current state. `voiceStatus()` returns `available: false` until Speech Recognition and Microphone are authorized for optional file transcription. Wake standby is separate: it gates only on Microphone authorization and live audio input because it does not use Speech Recognition.
@@ -71,7 +86,7 @@ The native helper writes UTF-8 JSON lines to stdout:
 {"type":"error","message":"microphone permission was not granted"}
 ```
 
-The event types are `ready`, `listening`, `transcript`, `error`, `clap`, `wake`, `cue`, `paused`, and `idle`. A `wake` event has status `clap` or `Alfred`. A `cue` event confirms playback ended; `ready` follows when capture starts. A `paused` event means capture stopped for system sleep. An `idle` event ends a window without a trigger; it contains no order.
+The event types are `ready`, `listening`, `transcript`, `error`, `clap`, `wake`, `cue`, `paused`, and `idle`. A `wake` event has status `clap` or `Alfred`. A `cue` event with status `played` confirms playback ended; its detail includes the output device, volume, mute state, peak level, and elapsed time. `ready` follows when capture starts. A `paused` event means capture stopped for system sleep. An `idle` event ends a window without a trigger; it contains no order.
 
 ## Verification Limits
 

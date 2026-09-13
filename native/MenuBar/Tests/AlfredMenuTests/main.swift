@@ -12,6 +12,13 @@ let now = Date(timeIntervalSince1970: 1_789_275_000)
 let fresh = try StandbySnapshot.decode(#"{"loaded":true,"running":true,"pid":42,"state":{"status":"running","detail":"Waiting for deliberate double clap or spoken Alfred","updatedAt":"2026-09-13T04:50:00.000Z"},"detail":"Waiting"}"#)
 expect(fresh.menuState(now: now).kind == .listening, "fresh running standby should show listening")
 expect(fresh.menuState(now: now).micIndicator, "fresh running standby should show mic indicator")
+expect(fresh.menuState(now: now).cueOutput == .current, "missing cue output should default to current output")
+
+let speakers = try StandbySnapshot.decode(#"{"loaded":true,"running":true,"pid":42,"cueOutput":"speakers","state":{"status":"running","detail":"Waiting","updatedAt":"2026-09-13T04:50:00.000Z"},"detail":"Waiting"}"#)
+expect(speakers.menuState(now: now).cueOutput == .speakers, "speakers cue output should decode")
+
+let unknownOutput = try StandbySnapshot.decode(#"{"loaded":true,"running":true,"pid":42,"cueOutput":"headphones","state":{"status":"running","detail":"Waiting","updatedAt":"2026-09-13T04:50:00.000Z"},"detail":"Waiting"}"#)
+expect(unknownOutput.menuState(now: now).cueOutput == .current, "unknown cue output should fall back to current output")
 
 let stale = try StandbySnapshot.decode(#"{"loaded":true,"running":true,"pid":42,"state":{"status":"running","detail":"Waiting","updatedAt":"2026-09-13T04:00:00.000Z"},"detail":"Waiting"}"#)
 expect(stale.menuState(now: now).kind == .stale, "stale state should not show listening")

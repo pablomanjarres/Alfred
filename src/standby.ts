@@ -4,7 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { runProcess } from './process.js';
-import { stateDirectory } from './config.js';
+import { cueOutput, stateDirectory } from './config.js';
 
 export const LABEL = 'com.pablo.alfred.standby';
 const LOG_LIMIT = 128 * 1024;
@@ -47,7 +47,7 @@ export async function serviceStatus(options: { paths?: StandbyPaths; launchctl?:
   const loaded = launch.code === 0;
   const pid = parseLaunchdPid(launch.stdout);
   const running = pid !== undefined && processIsRunning(pid);
-  return { loaded, running, pid, state, detail: state?.detail || launch.stderr || (running ? `running pid ${pid}` : loaded ? 'loaded' : 'not loaded') };
+  return { loaded, running, pid, state, cueOutput: await cueOutput(paths.home), detail: state?.detail || launch.stderr || (running ? `running pid ${pid}` : loaded ? 'loaded' : 'not loaded') };
 }
 export async function installService(options: { paths?: StandbyPaths } = {}): Promise<StandbyPaths> {
   const paths = options.paths ?? servicePaths();
@@ -100,7 +100,8 @@ export async function runStandby(paths = servicePaths(), options: StandbyRunOpti
       cycles += 1;
       try {
         await writeState(paths, 'starting', 'Preparing local clap and Alfred wake detection.');
-        const trigger = await runWakeWatchWithRetry(paths, helper, runner, controller.signal, options.cue ? false : scheduleCueNext);
+        const output = await cueOutput(paths.home);
+        const trigger = await runWakeWatchWithRetry(paths, helper, runner, controller.signal, options.cue ? false : scheduleCueNext, output);
         scheduleCueNext = false;
         if (trigger) {
           await writeState(paths, 'starting', `${trigger} heard; microphone stopped for the cue.`);
@@ -167,23 +168,23 @@ async function clapStatus(paths: StandbyPaths, helper: string | undefined = unde
   }
 }
 
-async function runWakeWatchWithRetry(paths: StandbyPaths, helper: string, runner: Runner, signal?: AbortSignal, playCue = false): Promise<string | undefined> {
+async function runWakeWatchWithRetry(paths: StandbyPaths, helper: string, runner: Runner, signal?: AbortSignal, playCue = false, output = 'current'): Promise<string | undefined> {
   try {
-    return await runWakeWatch(paths, helper, runner, signal, playCue);
+    return await runWakeWatch(paths, helper, runner, signal, playCue, output);
   } catch (error) {
     if (!sleepTimeout(error)) throw error;
     await writeState(paths, 'starting', 'Wake watch timed out after 24 hours; retrying once.');
-    return runWakeWatch(paths, helper, runner, signal, playCue);
+    return runWakeWatch(paths, helper, runner, signal, playCue, output);
   }
 }
 
-async function runWakeWatch(paths: StandbyPaths, helper: string, runner: Runner, signal?: AbortSignal, playCue = false): Promise<string | undefined> {
+async function runWakeWatch(paths: StandbyPaths, helper: string, runner: Runner, signal?: AbortSignal, playCue = false, output = 'current'): Promise<string | undefined> {
   let updates = Promise.resolve();
   let updateError: unknown;
   const handled = new Set<string>();
   let result: Awaited<ReturnType<Runner>>;
   try {
-    result = await runner(helper, ['wake-watch', ...(playCue ? ['--cue'] : [])], {
+    result = await runner(helper, ['wake-watch', ...(playCue ? ['--cue'] : []), '--cue-output', output], {
       timeoutMs: WAKE_WATCH_TIMEOUT_MS, signal,
       onLine: (line) => {
         const trimmed = line.trim();
@@ -210,10 +211,10 @@ async function runWakeWatch(paths: StandbyPaths, helper: string, runner: Runner,
   return wake ? wake.status || 'wake' : undefined;
 }
 
-async function helperPath(): Promise<string> {
+export async function helperPath(): Promise<string> {
   const candidates = process.env.ALFRED_VOICE_HELPER ? [process.env.ALFRED_VOICE_HELPER] : [join(projectRoot(), 'dist/AlfredVoice.app/Contents/MacOS/AlfredVoice')];
   for (const candidate of candidates) { try { await access(candidate, fsConstants.X_OK); return candidate; } catch {} }
-  throw new Error(`Alfred clap helper not found. Checked: ${candidates.join(', ')}`);
+  throw new Error(`Alfred voice helper not found. Checked: ${candidates.join(', ')}`);
 }
 
 async function ensurePrivate(paths: StandbyPaths): Promise<void> { await mkdir(paths.standby, { recursive: true, mode: 0o700 }); await chmod(paths.standby, 0o700); }
