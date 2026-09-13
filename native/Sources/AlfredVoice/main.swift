@@ -315,6 +315,22 @@ case "clap-authorize": authorizeClap()
 case "clap-doctor": clapDoctor()
 case "selftest": selftest()
 case "clap-selftest": clapPrivacySelftest()
+case "wake-audio-selftest": wakeAudioSelftest()
+case "wake-watch", "wake-file":
+  do {
+    guard let resources = Bundle.main.resourceURL else {
+      throw WakeAudioError(description: "Alfred wake resources are missing")
+    }
+    let keyword = try AlfredKeywordSpotter(resourcesDirectory: resources)
+    if options.command == "wake-watch" { _ = try waitForWake(using: keyword) }
+    else {
+      guard let file = options.file else {
+        keyword.close()
+        throw WakeAudioError(description: "wake-file requires --file")
+      }
+      try testWakeFile(file, using: keyword)
+    }
+  } catch { fail(String(describing: error)) }
 case "clap-watch": _ = waitForClap()
 case "file":
   guard let file = options.file else { fail("file mode requires --file") }
