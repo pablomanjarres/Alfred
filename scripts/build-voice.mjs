@@ -17,9 +17,10 @@ function run(command, args, options = {}) {
     shell: false,
     ...options,
   });
-  if (result.status !== 0) {
+  if (result.status !== 0 && !options.allowFailure) {
     process.exit(result.status ?? 1);
   }
+  return result;
 }
 
 if (process.platform !== 'darwin') {
@@ -36,6 +37,6 @@ cpSync(join(nativeRoot, '.build', 'release', 'AlfredVoice'), join(macos, 'Alfred
 cpSync(join(nativeRoot, 'Resources', 'Info.plist'), join(contents, 'Info.plist'));
 
 run(join(macos, 'AlfredVoice'), ['selftest']);
-run(join(macos, 'AlfredVoice'), ['doctor']);
+run(join(macos, 'AlfredVoice'), ['doctor'], { allowFailure: true });
 
 console.log(`Built ${appRoot}`);

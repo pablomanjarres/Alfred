@@ -53,10 +53,28 @@ func doctor(_ locale: String) {
   let speech = SFSpeechRecognizer.authorizationStatus()
   let mic = AVCaptureDevice.authorizationStatus(for: .audio)
   let hasInput = AVCaptureDevice.default(for: .audio) != nil
-  let detail = "speech=\(speech.rawValue) microphone=\(mic.rawValue) audioInput=\(hasInput)"
-  if speech == .denied || speech == .restricted { fail("speech recognition unavailable: \(detail)") }
-  if mic == .denied || mic == .restricted || !hasInput { fail("microphone unavailable: \(detail)") }
+  let detail = "speech=\(authName(speech)) microphone=\(authName(mic)) audioInput=\(hasInput)"
+  if speech != .authorized { fail("speech recognition is not authorized: \(detail)") }
+  if mic != .authorized || !hasInput { fail("microphone is not ready: \(detail)") }
   emit("ready", ["status": "ready", "detail": detail])
+}
+func authName(_ status: SFSpeechRecognizerAuthorizationStatus) -> String {
+  switch status {
+  case .authorized: return "authorized"
+  case .denied: return "denied"
+  case .restricted: return "restricted"
+  case .notDetermined: return "notDetermined"
+  @unknown default: return "unknown"
+  }
+}
+func authName(_ status: AVAuthorizationStatus) -> String {
+  switch status {
+  case .authorized: return "authorized"
+  case .denied: return "denied"
+  case .restricted: return "restricted"
+  case .notDetermined: return "notDetermined"
+  @unknown default: return "unknown"
+  }
 }
 func authorizeSpeech() {
   let sema = DispatchSemaphore(value: 0)
