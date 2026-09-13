@@ -43,7 +43,7 @@ switch off” to stop both. Standby audio is never recorded or sent to Codex.
 
 - Local commands use full access by default; read-only mode is available.
 - Double clap and “Alfred” work while the computer is awake. Waking from system sleep needs an external sensor.
-- Your orders and answers stay in `~/.alfred/`. Codex plan limits still apply.
+- Local CLI history stays in `~/.alfred/`. Voice conversations use Codex. Plan limits still apply.
 
 [Voice setup](docs/voice.md) · [Desktop setup](docs/codex-desktop.md) · [Configuration](config.example.json)
 
