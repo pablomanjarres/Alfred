@@ -7,21 +7,21 @@ import { receipts } from './history.js';
 import { runProcess } from './process.js';
 import { ClapIdleError, transcribe, speak } from './voice.js';
 import { doctor } from './doctor.js';
+import { installService, serviceStatus, startService, stopService } from './standby.js';
 
 const HELP = `Alfred, at your service.
 
   alfred desktop                     Open this workspace in Codex desktop
   alfred ask "your order"             Run an order through your Codex account
-  alfred listen                      Listen for one spoken order
-  alfred clap                        Double clap, then give an order
   alfred transcribe /path/message.m4a Execute a saved voice message
   alfred history                     Show the ten latest local receipts
+  alfred standby start|stop|status    Manage login clap-only standby
   alfred doctor                      Check account, tools, voice, and pet
 
 Options: --cwd PATH, --permission full|workspace|read-only, --model NAME,
          --locale en-US|es-CO, --speak, --new, --loop, --help
---new starts a fresh Codex conversation. --loop repeats clap mode until Ctrl-C.
-Voice helpers require macOS. Codex desktop's own voice button works independently.
+--new starts a fresh Codex conversation.
+Use Codex desktop's voice button for spoken orders. Alfred standby only detects claps.
 Config: ~/.alfred/config.json. Local receipts: ~/.alfred/history/.
 `;
 
@@ -47,6 +47,15 @@ async function main() {
   const { signal } = controller;
   try {
     if (values.loop && command !== 'clap') throw new Error('--loop is available only with clap.');
+    if (command === 'standby') {
+      const action = positionals.shift();
+      if (!action || !['install', 'start', 'stop', 'status'].includes(action)) throw new Error('Use standby install, start, stop, or status.');
+      if (action === 'install') { const paths = await installService(); console.log(`Installed ${paths.plist}`); return; }
+      if (action === 'start') { console.log(JSON.stringify(await startService())); return; }
+      if (action === 'stop') { await stopService(); console.log('Alfred standby stopped.'); return; }
+      console.log(JSON.stringify(await serviceStatus()));
+      return;
+    }
     if (command === 'doctor') { if (!await doctor(config)) process.exitCode = 1; return; }
     if (command === 'history') {
       const rows = await receipts(stateDirectory());

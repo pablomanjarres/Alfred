@@ -14,6 +14,7 @@ export type VoiceStatus = { available: boolean; detail: string };
 export class ClapIdleError extends Error {
   constructor() { super('No double clap was heard.'); this.name = 'ClapIdleError'; }
 }
+const LIVE_MIC_DISABLED = 'Alfred-owned live microphone transcription is disabled. Use the Codex voice button for spoken commands.';
 type HelperEvent =
   | { type: 'ready' | 'listening' | 'idle'; status?: string; detail?: string }
   | { type: 'transcript'; text?: string }
@@ -24,6 +25,7 @@ export async function transcribe(options: TranscribeOptions): Promise<string> {
   if (process.platform !== 'darwin') {
     throw new Error('Alfred voice requires macOS Speech and AVAudioEngine.');
   }
+  if (options.mode === 'listen' || options.mode === 'clap') throw new Error(LIVE_MIC_DISABLED);
   if (options.mode === 'file' && !options.file) {
     throw new Error('transcribe file mode requires a file path.');
   }

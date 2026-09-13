@@ -51,6 +51,12 @@ nonMacTest('voice APIs explain that native voice requires macOS', async () => {
   await assert.rejects(speak('hello'), /macOS/i);
 });
 
+
+macTest('live microphone transcription modes are disabled', async () => {
+  await assert.rejects(transcribe({ mode: 'listen' }), /Codex voice button/);
+  await assert.rejects(transcribe({ mode: 'clap' }), /Codex voice button/);
+});
+
 macTest('voiceStatus reports a missing helper without prompting', async () => {
   const previous = process.env.ALFRED_VOICE_HELPER;
   process.env.ALFRED_VOICE_HELPER = '/missing/AlfredVoice';
@@ -67,7 +73,7 @@ macTest('voiceStatus reports a missing helper without prompting', async () => {
 macTest('transcribe reads JSON-line statuses and preserves UTF-8 transcript text', async () => {
   const helper = await fakeHelper(`#!/usr/bin/env node
 const args = process.argv.slice(2);
-if (!args.includes('listen') || !args.includes('--locale') || !args.includes('es-CO')) {
+if (!args.includes('file') || !args.includes('--file') || !args.includes('/tmp/message.m4a') || !args.includes('--locale') || !args.includes('es-CO')) {
   console.log(JSON.stringify({ type: 'error', message: 'wrong arguments: ' + args.join(' ') }));
   process.exit(1);
 }
@@ -81,7 +87,8 @@ console.log(JSON.stringify({ type: 'transcript', text: 'enciende la luz ñ' }));
 
   try {
     const transcript = await transcribe({
-      mode: 'listen',
+      mode: 'file',
+      file: '/tmp/message.m4a',
       locale: 'es-CO',
       onStatus: (status) => statuses.push(status),
     });
@@ -110,7 +117,8 @@ setInterval(() => {}, 1000);
 
   try {
     const promise = transcribe({
-      mode: 'listen',
+      mode: 'file',
+      file: '/tmp/message.m4a',
       signal: controller.signal,
       onStatus: () => controller.abort(),
     });
@@ -135,7 +143,7 @@ setTimeout(() => {
   const restore = withEnv('ALFRED_VOICE_HELPER', helper);
 
   try {
-    assert.equal(await transcribe({ mode: 'listen' }), 'stand by');
+    assert.equal(await transcribe({ mode: 'file', file: '/tmp/message.m4a' }), 'stand by');
     await access(marker);
   } finally {
     restore();
@@ -159,7 +167,7 @@ setInterval(() => {}, 1000);
   const restoreGrace = withEnv('ALFRED_VOICE_TRANSCRIPT_CLOSE_MS', '25');
 
   try {
-    assert.equal(await transcribe({ mode: 'listen' }), 'yes sir');
+    assert.equal(await transcribe({ mode: 'file', file: '/tmp/message.m4a' }), 'yes sir');
     await access(marker);
   } finally {
     restoreGrace();
