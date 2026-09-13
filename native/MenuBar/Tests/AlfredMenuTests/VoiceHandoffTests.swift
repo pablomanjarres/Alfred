@@ -16,6 +16,27 @@ func runVoiceHandoffTests() throws {
   let invalid = VoiceHandoffRequest(id: "not-a-uuid", status: "pending", requestedAt: now, expiresAt: now.addingTimeInterval(30))
   expect(!invalid.canClaim(now: now), "invalid request id cannot act")
 
+
+  let decoder = JSONDecoder()
+  decoder.dateDecodingStrategy = .iso8601
+  let implicitStart = try decoder.decode(VoiceHandoffRequest.self, from: Data(#"{"id":"11111111-1111-4111-8111-111111111111","status":"pending","requestedAt":"2026-09-13T12:00:00Z","expiresAt":"2026-09-13T12:00:30Z"}"#.utf8))
+  expect(implicitStart.action == .start, "missing handoff action defaults to start")
+  expect(implicitStart.threadId == nil, "missing thread id stays nil")
+  let endRequest = try decoder.decode(VoiceHandoffRequest.self, from: Data(#"{"id":"22222222-2222-4222-8222-222222222222","status":"pending","action":"end","threadId":"33333333-3333-4333-8333-333333333333","requestedAt":"2026-09-13T12:00:00Z","expiresAt":"2026-09-13T12:00:30Z"}"#.utf8))
+  expect(endRequest.action == .end, "explicit end action decodes")
+  expect(endRequest.threadId == "33333333-3333-4333-8333-333333333333", "valid thread id is preserved")
+  let badThread = VoiceHandoffRequest(id: UUID().uuidString, status: "pending", requestedAt: now, expiresAt: now.addingTimeInterval(30), action: .start, threadId: "not-a-uuid")
+  expect(!badThread.canClaim(now: now), "invalid thread id cannot dispatch")
+
+  expect(VoiceEndDecision.forInput(.noCodexProcess) == .finishEnded("Codex is not running."), "end request finishes when Codex is not running")
+  expect(VoiceEndDecision.forInput(.active) == .sendEndShortcut, "active Codex input sends one end shortcut")
+  if case .block(let inactiveDetail) = VoiceEndDecision.forInput(.inactive) {
+    expect(inactiveDetail.contains("No active Codex voice call"), "inactive input blocks instead of toggling on")
+  } else { expect(false, "inactive input must block") }
+  if case .block(let unknownDetail) = VoiceEndDecision.forInput(.unknown("metadata unavailable")) {
+    expect(unknownDetail.contains("Could not confirm Codex voice state"), "unknown input blocks with actionable detail")
+  } else { expect(false, "unknown input must block") }
+
   let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
   defer { try? FileManager.default.removeItem(at: directory) }
   let store = VoiceHandoffStore(directory: directory)
@@ -36,8 +57,8 @@ func runVoiceHandoffTests() throws {
   try encoder.encode(replacement).write(to: directory.appendingPathComponent("handoff.json"))
   try checkHandoff(!(try store.finish(request.id, status: "blocked", detail: "old result")), "stale result cannot overwrite a new request")
   try checkHandoff(store.claim(replacement, now: now), "new request remains claimable")
-  try checkHandoff(store.finish(replacement.id, status: "started", detail: "Codex is listening"), "matching completion succeeds")
-  try checkHandoff(store.read()?.status == "started", "completion is persisted")
+  try checkHandoff(store.finish(replacement.id, status: "ended", detail: "Codex voice ended"), "matching end completion succeeds")
+  try checkHandoff(store.read()?.status == "ended", "ended completion is persisted")
   try checkHandoff(!(try store.canDispatch(replacement.id, now: now)), "completed request never dispatches again")
   let attrs = try FileManager.default.attributesOfItem(atPath: directory.appendingPathComponent("handoff.json").path)
   expect((attrs[.posixPermissions] as? NSNumber)?.intValue == 0o600, "handoff state remains private")
