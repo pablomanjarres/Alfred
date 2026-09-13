@@ -46,7 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
   }
 
-  @objc private func startListener() { command(["standby", "start"], timeout: 30) }
+  @objc private func startListener() { command(["standby", "start"], timeout: 95) }
   @objc private func stopListener() { command(["standby", "stop"], timeout: 20) }
   @objc private func quitUI() { NSApp.terminate(nil) }
 
@@ -151,10 +151,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 func killProcess(_ process: Process) {
-  process.terminate()
+  let children = descendantPids(of: process.processIdentifier)
+  let pids = children + [process.processIdentifier]
+  signal(pids, SIGTERM)
   let grace = Date().addingTimeInterval(0.5)
   while process.isRunning && Date() < grace { Thread.sleep(forTimeInterval: 0.05) }
-  if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+  signal(process.isRunning ? pids : children, SIGKILL)
+}
+
+func descendantPids(of rootPid: Int32) -> [Int32] {
+  let process = Process()
+  process.executableURL = URL(fileURLWithPath: "/bin/ps")
+  process.arguments = ["-axo", "pid=,ppid="]
+  let out = Pipe()
+  process.standardOutput = out
+  do { try process.run(); process.waitUntilExit() } catch { return [] }
+  let output = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+  var children: [Int32: [Int32]] = [:]
+  for line in output.split(separator: "\n") {
+    let parts = line.split(separator: " ").compactMap { Int32($0) }
+    if parts.count == 2 { children[parts[1], default: []].append(parts[0]) }
+  }
+  var found: [Int32] = []
+  var stack = children[rootPid] ?? []
+  while let pid = stack.popLast() {
+    found.append(pid)
+    stack.append(contentsOf: children[pid] ?? [])
+  }
+  return found
+}
+
+func signal(_ pids: [Int32], _ sig: Int32) {
+  for pid in pids where pid > 0 { kill(pid, sig) }
 }
 
 struct MenuError: LocalizedError {

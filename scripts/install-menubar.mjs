@@ -1,4 +1,4 @@
-import { accessSync, chmodSync, cpSync, mkdirSync, writeFileSync } from 'node:fs';
+import { accessSync, chmodSync, cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { constants } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,6 +26,12 @@ function run(command, args, options = {}) {
   return result;
 }
 function launchctl(args, options = {}) { return run('/bin/launchctl', args, options); }
+function bundleId(appPath) {
+  const plist = join(appPath, 'Contents', 'Info.plist');
+  if (!existsSync(plist)) return undefined;
+  const result = run('/usr/bin/plutil', ['-extract', 'CFBundleIdentifier', 'raw', '-o', '-', plist], { allowFailure: true, quiet: true });
+  return result.status === 0 ? result.stdout.trim() : undefined;
+}
 function xml(value) { return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;'); }
 function servicePid() {
   const result = launchctl(['print', service], { allowFailure: true, quiet: true });
@@ -43,9 +49,17 @@ function waitRunning() {
 
 accessSync(sourceApp, constants.R_OK);
 accessSync(cliPath, constants.R_OK);
+mkdirSync(dirname(targetApp), { recursive: true });
+if (existsSync(targetApp)) {
+  const existing = bundleId(targetApp);
+  if (existing !== label) {
+    console.error(`Refusing to replace ${targetApp}; bundle id is ${existing || 'unknown'}, not ${label}.`);
+    process.exit(1);
+  }
+}
 launchctl(['bootout', service], { allowFailure: true, quiet: true });
 waitUnloaded();
-mkdirSync(dirname(targetApp), { recursive: true });
+if (existsSync(targetApp)) rmSync(targetApp, { recursive: true, force: true });
 cpSync(sourceApp, targetApp, { recursive: true, force: true });
 chmodSync(targetExe, 0o755);
 mkdirSync(dirname(configPath), { recursive: true, mode: 0o700 });
