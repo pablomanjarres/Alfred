@@ -78,7 +78,8 @@ public struct VoiceHandoffStartReceipt: Codable, Equatable {
   }
 
   public func matches(_ process: VoiceCodexProcessIdentity) -> Bool {
-    codexProcessID == process.processID && codexLaunchDate == process.launchDate
+    codexProcessID == process.processID
+      && codexLaunchDate.timeIntervalSince1970 == process.launchDate.timeIntervalSince1970
   }
 
   private enum CodingKeys: String, CodingKey { case requestId, threadId, codexProcessID, codexLaunchDate }
