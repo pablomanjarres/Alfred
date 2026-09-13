@@ -48,7 +48,7 @@ Before capture, the keyword detector warms up with generated silence. A competin
 
 ## Wake sound
 
-Use **Test wake sound** in the menu to check playback without clapping. It pauses standby for the sound and restores listening afterward, including when playback fails. **Wake sound output** chooses your current audio output or the Mac's built-in speakers. It leaves the system's default output unchanged.
+Use **Test wake sound** in the menu to check playback without clapping. It checks microphone permission before pausing an active listener, then waits for listening to return after playback. A denied permission leaves the existing listener running. **Wake sound output** chooses your current audio output or the Mac's built-in speakers. It leaves the system's default output unchanged.
 
 ```sh
 alfred cue output speakers
@@ -63,6 +63,12 @@ The wake cue follows model preparation, which can take a few seconds after detec
 ## Permissions
 
 Explicit file transcription may require Speech Recognition permission. `voiceStatus()` and `AlfredVoice doctor` do not prompt; they only report the current state. `voiceStatus()` returns `available: false` until Speech Recognition and Microphone are authorized for optional file transcription. Wake standby is separate: it gates only on Microphone authorization and live audio input because it does not use Speech Recognition.
+
+macOS can ask for Alfred's microphone permission even when Codex already has access. Allow it when using the menu's listening controls. The installed Alfred app includes the required microphone explanation and a signed bundle identity.
+
+Run `npm run setup:menubar-signing` once before building the menu app. It creates Alfred's own local signing key and reuses it for later builds. Its private files stay under `~/Library/Application Support/Alfred/MenuBar/signing/`; no password entry is needed for normal builds. The installer rejects ad-hoc builds, which remain available for CI checks.
+
+An existing certificate can instead be selected with `ALFRED_SIGNING_IDENTITY` and `ALFRED_SIGNING_KEYCHAIN`. Keep the same signer across updates so the app's [macOS signing requirement](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements) remains stable.
 
 The bundled app plist explains the privacy reasons:
 

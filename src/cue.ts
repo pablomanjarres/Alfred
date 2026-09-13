@@ -1,10 +1,10 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { runProcess } from './process.js';
 import { cueOutput, type CueOutput } from './config.js';
-import { helperPath, servicePaths, serviceStatus as defaultServiceStatus, startService as defaultStartService, stopService as defaultStopService, type Launchctl, type StandbyPaths } from './standby.js';
+import { ensureMicrophoneReady, helperPath, servicePaths, serviceStatus as defaultServiceStatus, startService as defaultStartService, stopService as defaultStopService, type Launchctl, type StandbyPaths, type StandbyState } from './standby.js';
 
 type Runner = typeof runProcess;
-type Status = { running: boolean; pid?: number };
+type Status = { loaded?: boolean; running: boolean; pid?: number; state?: StandbyState; detail?: string };
 type CueEvent = { type?: string; status?: string; message?: unknown; detail?: unknown };
 
 export interface CueDiagnostics {
@@ -30,8 +30,11 @@ export interface CueTestOptions {
   startService?: () => Promise<unknown>;
   waitStopped?: () => Promise<void>;
   waitTimeoutMs?: number;
+  restoreTimeoutMs?: number;
   pollMs?: number;
   processIsAlive?: (pid: number) => boolean;
+  preflight?: () => Promise<void>;
+  waitStarted?: () => Promise<void>;
 }
 
 export async function testCue(options: CueTestOptions = {}): Promise<CueDiagnostics> {
@@ -42,6 +45,7 @@ export async function testCue(options: CueTestOptions = {}): Promise<CueDiagnost
   const getStatus = options.serviceStatus ?? (() => defaultServiceStatus({ paths, launchctl: options.launchctl }));
   const status = await getStatus();
   const wasRunning = status.running;
+  if (wasRunning) await (options.preflight ?? (() => ensureMicrophoneReady({ paths, helper, runner, signal: options.signal, updateState: false })))();
   let shouldRestore = false;
   try {
     if (wasRunning) {
@@ -63,8 +67,34 @@ export async function testCue(options: CueTestOptions = {}): Promise<CueDiagnost
     if (!played) throw new Error('wake cue did not report a played cue event.');
     return cueDiagnostics(mode, played);
   } finally {
-    if (wasRunning && shouldRestore) await (options.startService ?? (() => defaultStartService({ paths, launchctl: options.launchctl })))();
+    if (wasRunning && shouldRestore) {
+      const startedAt = new Date();
+      const restored = await (options.startService ?? (() => defaultStartService({ paths, launchctl: options.launchctl })))();
+      throwIfBlocked(restored);
+      // Cleanup must finish even when the cue was cancelled.
+      await (options.waitStarted ?? (() => waitForStarted({ status: getStatus, startedAt, timeoutMs: options.restoreTimeoutMs, pollMs: options.pollMs })))();
+    }
   }
+}
+
+
+async function waitForStarted(options: { status: () => Promise<Status>; startedAt: Date; timeoutMs?: number; pollMs?: number }): Promise<void> {
+  const deadline = Date.now() + (options.timeoutMs ?? 10_000);
+  const startedAt = options.startedAt.getTime();
+  while (Date.now() < deadline) {
+    const current = await options.status();
+    throwIfBlocked(current);
+    const updatedAt = current.state?.updatedAt ? Date.parse(current.state.updatedAt) : 0;
+    if (current.loaded && current.running && current.state?.status === 'running' && updatedAt >= startedAt) return;
+    await delay(options.pollMs ?? 100);
+  }
+  throw new Error('Timed out waiting for Alfred standby to report fresh microphone readiness after cue test.');
+}
+
+function throwIfBlocked(value: unknown): void {
+  if (!value || typeof value !== 'object') return;
+  const status = value as Status;
+  if (status.state?.status === 'blocked') throw new Error(status.state.detail || status.detail || 'Alfred standby restart failed.');
 }
 
 async function isRunning(status: () => Promise<Status>): Promise<boolean> {

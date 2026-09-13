@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { LABEL, buildPlist, runStandby, servicePaths, serviceStatus, stopService, writeBlockedState } from '../src/standby.ts';
+import { LABEL, buildPlist, ensureMicrophoneReady, runStandby, servicePaths, serviceStatus, startService, stopService, writeBlockedState } from '../src/standby.ts';
 
 test('LaunchAgent plist starts standby without restart storms on clean exits', () => {
   const plist = buildPlist({
@@ -53,6 +53,33 @@ test('service status includes cue output from Alfred config', async () => {
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+
+test('microphone readiness requires a ready event and preserves blank helper failures', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
+  await assert.rejects(ensureMicrophoneReady({
+    paths: isolatedServicePaths(root), helper: '/fake/helper', updateState: false,
+    runner: async () => ({ code: 1, stdout: '', stderr: '' }),
+  }), /clap-doctor exited with code 1/);
+  await assert.rejects(ensureMicrophoneReady({
+    paths: isolatedServicePaths(root), helper: '/fake/helper', updateState: false,
+    runner: async () => ({ code: 0, stdout: '', stderr: '' }),
+  }), /did not report ready/);
+});
+
+test('standby start rejects blocked microphone readiness instead of reporting success', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
+  const calls: string[][] = [];
+  await assert.rejects(startService({
+    paths: isolatedServicePaths(root), helper: '/fake/helper',
+    launchctl: async (_command, args) => { calls.push(args); return { code: 0, stdout: '', stderr: '' }; },
+    runner: async () => ({ code: 1, stdout: '', stderr: '' }),
+  }), /clap-doctor exited with code 1/);
+  assert.equal(calls.some((args) => args[0] === 'bootstrap'), false);
+  const state = JSON.parse(await readFile(join(root, 'standby', 'state.json'), 'utf8'));
+  assert.equal(state.status, 'blocked');
+  assert.match(state.detail, /clap-doctor exited with code 1/);
 });
 
 test('start bootstraps without synchronous kickstart hangs', async () => {

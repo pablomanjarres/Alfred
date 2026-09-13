@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
+import { verifyMenuBundleSignature } from './menu-signing.mjs';
 
 const label = 'com.pablo.alfred.menubar';
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -49,6 +50,12 @@ function waitRunning() {
 
 accessSync(sourceApp, constants.R_OK);
 accessSync(cliPath, constants.R_OK);
+try {
+  verifyMenuBundleSignature(sourceApp, { allowAdHoc: false });
+} catch (error) {
+  console.error(`Refusing to install Alfred menu bar: ${error instanceof Error ? error.message : String(error)}`);
+  process.exit(1);
+}
 mkdirSync(dirname(targetApp), { recursive: true });
 if (existsSync(targetApp)) {
   const existing = bundleId(targetApp);
@@ -62,6 +69,8 @@ waitUnloaded();
 if (existsSync(targetApp)) rmSync(targetApp, { recursive: true, force: true });
 cpSync(sourceApp, targetApp, { recursive: true, force: true });
 chmodSync(targetExe, 0o755);
+run('/usr/bin/codesign', ['--verify', '--strict', targetApp]);
+run('/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister', ['-f', targetApp]);
 mkdirSync(dirname(configPath), { recursive: true, mode: 0o700 });
 writeFileSync(configPath, JSON.stringify({ nodePath: process.execPath, cliPath }, null, 2) + '\n', { mode: 0o600 });
 mkdirSync(dirname(plistPath), { recursive: true });

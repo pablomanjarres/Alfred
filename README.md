@@ -37,6 +37,7 @@ npm run build:voice
 alfred standby start
 alfred standby status
 alfred standby stop
+npm run setup:menubar-signing
 npm run build:menubar
 npm run install:menubar
 ```

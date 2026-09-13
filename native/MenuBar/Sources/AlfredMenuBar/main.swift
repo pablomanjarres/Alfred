@@ -14,7 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private var polling = false
   private var pollGeneration = 0
   private var busyAction: BusyAction?
-  private var commandErrorUntil: Date?
+  private var commandError: MenuActionError?
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     if NSRunningApplication.runningApplications(withBundleIdentifier: appId).contains(where: { $0.processIdentifier != getpid() }) { NSApp.terminate(nil) }
@@ -30,7 +30,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private func refreshStatus(force: Bool) {
     guard let config else { setError("Missing Alfred menu config. Run npm run install:menubar."); rebuildMenu(); return }
     if busyAction != nil { return }
-    if !force, let commandErrorUntil, Date() < commandErrorUntil { return }
     if polling && !force { return }
     pollGeneration += 1
     let generation = pollGeneration
@@ -50,9 +49,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
   }
 
-  @objc private func startListener() { command(["standby", "start"], timeout: 95) }
+  // Allow the bounded microphone prompt and service restore to finish before killing the CLI.
+  @objc private func startListener() { command(["standby", "start"], timeout: 150) }
   @objc private func stopListener() { command(["standby", "stop"], timeout: 20) }
-  @objc private func testWakeSound() { command(["cue", "test"], timeout: 95, busy: .cueTest) }
+  @objc private func testWakeSound() { command(["cue", "test"], timeout: 300, busy: .cueTest) }
   @objc private func useCurrentOutput() { command(["cue", "output", "current"], timeout: 20, busy: .cueOutput) }
   @objc private func useSpeakersOutput() { command(["cue", "output", "speakers"], timeout: 20, busy: .cueOutput) }
   @objc private func quitUI() { NSApp.terminate(nil) }
@@ -78,10 +78,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private func command(_ args: [String], timeout: TimeInterval, busy: BusyAction = .listener) {
     guard busyAction == nil else { return }
     guard let config else { setError("Missing Alfred menu config. Run npm run install:menubar."); rebuildMenu(); return }
+    let stateBeforeBusy = lastState
     pollGeneration += 1
     polling = false
     busyAction = busy
-    commandErrorUntil = nil
+    commandError = nil
     lastState = MenuState(kind: .starting, detail: busy.detail(args: args), micIndicator: false, cueOutput: lastState.cueOutput)
     rebuildMenu()
     runAlfred(args, config: config, timeout: timeout) { [weak self] result in
@@ -91,9 +92,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch result {
         case .success: self.refreshStatus(force: true)
         case .failure(let error):
-          self.commandErrorUntil = Date().addingTimeInterval(20)
-          self.setError(error.localizedDescription)
+          self.lastState = stateBeforeBusy
+          self.commandError = MenuActionError(message: error.localizedDescription, expiresAt: Date().addingTimeInterval(20))
           self.rebuildMenu()
+          self.refreshStatus(force: true)
         }
       }
     }
@@ -108,7 +110,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let status = NSMenuItem(title: lastState.label, action: nil, keyEquivalent: "")
     status.isEnabled = false
     menu.addItem(status)
-    let detail = NSMenuItem(title: lastState.detail, action: nil, keyEquivalent: "")
+    if commandError?.visibleMessage() == nil { commandError = nil }
+    let detail = NSMenuItem(title: menuDetail(lastState, actionError: commandError), action: nil, keyEquivalent: "")
     detail.isEnabled = false
     menu.addItem(detail)
     let privacy = NSMenuItem(title: "Wake detection saves no audio.", action: nil, keyEquivalent: "")

@@ -93,3 +93,23 @@ public struct MenuState: Equatable {
 }
 
 public enum MenuStateKind: Equatable { case listening, starting, paused, blocked, stale, stopped }
+
+public struct MenuActionError: Equatable {
+  public let message: String
+  public let expiresAt: Date
+
+  public init(message: String, expiresAt: Date) {
+    self.message = message
+    self.expiresAt = expiresAt
+  }
+
+  public func visibleMessage(now: Date = Date()) -> String? {
+    guard now < expiresAt else { return nil }
+    let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? "Action failed." : trimmed
+  }
+}
+
+public func menuDetail(_ state: MenuState, actionError: MenuActionError?, now: Date = Date()) -> String {
+  actionError?.visibleMessage(now: now) ?? state.detail
+}
