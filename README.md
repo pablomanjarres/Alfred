@@ -37,7 +37,11 @@ npm run build:voice
 alfred standby start
 alfred standby status
 alfred standby stop
+npm run build:menubar
+npm run install:menubar
 ```
+
+`npm run install:menubar` installs `~/Applications/Alfred.app`, a menu bar UI for standby status, Start/Stop, Open Codex, Launch at Login, and Quit UI. Quit UI leaves the listener alone; Stop Listener turns standby off.
 
 Use Codex desktop's voice button for spoken orders. The optional macOS helper can
 transcribe an existing audio file, and `alfred standby start` runs login wake
