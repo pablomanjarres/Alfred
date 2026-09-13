@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
+import { verifyMenuBundleSignature } from './menu-signing.mjs';
 
 const label = 'com.pablo.alfred.menubar';
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -49,7 +50,12 @@ function waitRunning() {
 
 accessSync(sourceApp, constants.R_OK);
 accessSync(cliPath, constants.R_OK);
-run('/usr/bin/codesign', ['--verify', '--strict', sourceApp]);
+try {
+  verifyMenuBundleSignature(sourceApp, { allowAdHoc: false });
+} catch (error) {
+  console.error(`Refusing to install Alfred menu bar: ${error instanceof Error ? error.message : String(error)}`);
+  process.exit(1);
+}
 mkdirSync(dirname(targetApp), { recursive: true });
 if (existsSync(targetApp)) {
   const existing = bundleId(targetApp);
