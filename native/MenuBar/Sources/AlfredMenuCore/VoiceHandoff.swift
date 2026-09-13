@@ -50,13 +50,54 @@ public enum VoiceStartDecision: Equatable {
   }
 }
 
-public struct VoiceHandoffStartReceipt: Equatable {
+public struct VoiceCodexProcessIdentity: Equatable {
+  public let processID: Int
+  public let launchDate: Date
+
+  public init(processID: Int, launchDate: Date) {
+    self.processID = processID
+    self.launchDate = launchDate
+  }
+}
+
+public struct VoiceHandoffStartReceipt: Codable, Equatable {
   public let requestId: String
   public let threadId: String?
+  public let codexProcessID: Int
+  public let codexLaunchDate: Date
 
-  public init(requestId: String, threadId: String?) {
+  public init(requestId: String, threadId: String?, codexProcessID: Int, codexLaunchDate: Date) {
     self.requestId = requestId
     self.threadId = threadId
+    self.codexProcessID = codexProcessID
+    self.codexLaunchDate = codexLaunchDate
+  }
+
+  public func isValid() -> Bool {
+    UUID(uuidString: requestId) != nil && (threadId == nil || UUID(uuidString: threadId!) != nil) && codexProcessID > 0
+  }
+
+  public func matches(_ process: VoiceCodexProcessIdentity) -> Bool {
+    codexProcessID == process.processID && codexLaunchDate == process.launchDate
+  }
+
+  private enum CodingKeys: String, CodingKey { case requestId, threadId, codexProcessID, codexLaunchDate }
+
+  public init(from decoder: Decoder) throws {
+    let values = try decoder.container(keyedBy: CodingKeys.self)
+    requestId = try values.decode(String.self, forKey: .requestId)
+    threadId = try values.decodeIfPresent(String.self, forKey: .threadId)
+    codexProcessID = try values.decode(Int.self, forKey: .codexProcessID)
+    let launchTime = try values.decode(Double.self, forKey: .codexLaunchDate)
+    codexLaunchDate = Date(timeIntervalSince1970: launchTime)
+  }
+
+  public func encode(to encoder: Encoder) throws {
+    var values = encoder.container(keyedBy: CodingKeys.self)
+    try values.encode(requestId, forKey: .requestId)
+    try values.encodeIfPresent(threadId, forKey: .threadId)
+    try values.encode(codexProcessID, forKey: .codexProcessID)
+    try values.encode(codexLaunchDate.timeIntervalSince1970, forKey: .codexLaunchDate)
   }
 }
 
@@ -64,12 +105,15 @@ public enum VoiceEndOwnershipDecision: Equatable {
   case checkInput
   case block(String)
 
-  public static func forRunningCodex(request: VoiceHandoffRequest, ownedStart: VoiceHandoffStartReceipt?) -> VoiceEndOwnershipDecision {
-    guard let ownedStart else {
+  public static func forRunningCodex(request: VoiceHandoffRequest, ownedStart: VoiceHandoffStartReceipt?, currentProcess: VoiceCodexProcessIdentity) -> VoiceEndOwnershipDecision {
+    guard let ownedStart, ownedStart.isValid() else {
       return .block("Alfred has not started this Codex voice call. Open Codex and end the call there.")
     }
     if let requestedThread = request.threadId, requestedThread != ownedStart.threadId {
       return .block("This stop request belongs to a different Alfred task. Open Codex and end the call there.")
+    }
+    guard ownedStart.matches(currentProcess) else {
+      return .block("This stop request belongs to a different Codex app session. Open Codex and end the call there.")
     }
     return .checkInput
   }
@@ -120,6 +164,7 @@ public struct VoiceHandoffStore {
   public let directory: URL
   private var requestURL: URL { directory.appendingPathComponent("handoff.json") }
   private var cancelledURL: URL { directory.appendingPathComponent("handoff-cancelled.json") }
+  private var sessionURL: URL { directory.appendingPathComponent("voice-session.json") }
 
   public init(directory: URL) { self.directory = directory }
 
@@ -158,6 +203,26 @@ public struct VoiceHandoffStore {
           current.id == id, current.status == "claimed" else { return false }
     try write(current.changing(status: status, detail: String(detail.prefix(500))))
     return true
+  }
+
+  public func readStartReceipt() throws -> VoiceHandoffStartReceipt? {
+    guard let data = try readSmallFile(sessionURL) else { return nil }
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    guard let receipt = try? decoder.decode(VoiceHandoffStartReceipt.self, from: data), receipt.isValid() else { return nil }
+    return receipt
+  }
+
+  public func rememberStart(_ receipt: VoiceHandoffStartReceipt) throws {
+    guard receipt.isValid() else { return }
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+    try encoder.encode(receipt).write(to: sessionURL, options: .atomic)
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: sessionURL.path)
+  }
+
+  public func clearStartReceipt() throws {
+    try? FileManager.default.removeItem(at: sessionURL)
   }
 
   private func isCancelled(_ id: String) throws -> Bool {

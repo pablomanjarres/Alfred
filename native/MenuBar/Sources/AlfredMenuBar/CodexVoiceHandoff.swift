@@ -92,7 +92,12 @@ final class CodexVoiceHandoff {
       finish(request, error: "Could not locate the running Codex app.")
       return
     }
-    if case .block(let detail) = VoiceEndOwnershipDecision.forRunningCodex(request: request, ownedStart: ownedStart) {
+    guard let identity = processIdentity(for: app) else {
+      finish(request, error: "Could not safely identify the running Codex app session. Open Codex and end the call there.")
+      return
+    }
+    let ownedStart = try store.readStartReceipt()
+    if case .block(let detail) = VoiceEndOwnershipDecision.forRunningCodex(request: request, ownedStart: ownedStart, currentProcess: identity) {
       finish(request, error: detail)
       return
     }
@@ -123,13 +128,17 @@ final class CodexVoiceHandoff {
     }
     do {
       if try CodexMicrophone.inputIsActive(in: url) {
-        finish(request, detail: "Codex already has the microphone. End the call, then choose Start listening.")
+        finish(request, error: "Codex already has the microphone. End the call, then choose Start listening.")
         return
       }
       guard current(request), Self.permissionGranted else { finish(request, error: "Alfred voice control permission is unavailable."); return }
+      guard let launchDate = app.launchDate else {
+        finish(request, error: "Could not safely track the Codex app session. Restart Codex, then ask Alfred again.")
+        return
+      }
       do { try postVoiceShortcut(to: app.processIdentifier) }
       catch { finish(request, error: error.localizedDescription); return }
-      pendingStart = VoiceHandoffStartReceipt(requestId: request.id, threadId: request.threadId)
+      pendingStart = VoiceHandoffStartReceipt(requestId: request.id, threadId: request.threadId, codexProcessID: Int(app.processIdentifier), codexLaunchDate: launchDate)
       waitForInput(request, url: url, deadline: Date().addingTimeInterval(8))
     } catch { finish(request, error: "Could not check Codex microphone: \(error.localizedDescription)") }
   }
@@ -179,6 +188,11 @@ final class CodexVoiceHandoff {
       .first { !$0.isTerminated }
   }
 
+  private func processIdentity(for app: NSRunningApplication) -> VoiceCodexProcessIdentity? {
+    guard let launchDate = app.launchDate else { return nil }
+    return VoiceCodexProcessIdentity(processID: Int(app.processIdentifier), launchDate: launchDate)
+  }
+
   private func threadURL(for request: VoiceHandoffRequest) -> URL? {
     guard let threadId = request.threadId, UUID(uuidString: threadId) != nil else { return nil }
     return URL(string: "codex://threads/\(threadId)")
@@ -199,9 +213,27 @@ final class CodexVoiceHandoff {
 
   private func finish(_ request: VoiceHandoffRequest, status: String, detail: String) {
     guard activeID == request.id else { return }
-    _ = try? store.finish(request.id, status: status, detail: detail)
-    if status == "started", pendingStart?.requestId == request.id { ownedStart = pendingStart }
-    if status == "ended" { ownedStart = nil }
+    var finalStatus = status
+    var finalDetail = detail
+    var rememberedStart = false
+    if status == "started" {
+      if pendingStart?.requestId != request.id {
+        finalStatus = "blocked"
+        finalDetail = "Could not safely record the Codex voice session. End the call in Codex, then ask Alfred again."
+        ownedStart = nil
+      }
+      if finalStatus == "started", let receipt = pendingStart {
+        do { try store.rememberStart(receipt); ownedStart = receipt; rememberedStart = true }
+        catch {
+          finalStatus = "blocked"
+          finalDetail = "Could not safely record the Codex voice session: \(error.localizedDescription). End the call in Codex, then ask Alfred again."
+          ownedStart = nil
+        }
+      }
+    }
+    let finished = (try? store.finish(request.id, status: finalStatus, detail: finalDetail)) ?? false
+    if finalStatus == "started" && !finished && rememberedStart { try? store.clearStartReceipt(); ownedStart = nil }
+    if finalStatus == "ended" { try? store.clearStartReceipt(); ownedStart = nil }
     if pendingStart?.requestId == request.id { pendingStart = nil }
     activeID = nil
     changed()
