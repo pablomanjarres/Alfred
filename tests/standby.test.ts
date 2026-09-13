@@ -24,9 +24,9 @@ test('LaunchAgent plist starts standby without restart storms on clean exits', (
 test('blocked voice state is private and visible to status', async () => {
   const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
   try {
-    await writeBlockedState(servicePaths(root), 'speech recognition is not authorized');
+    await writeBlockedState(isolatedServicePaths(root), 'speech recognition is not authorized');
     const status = await serviceStatus({
-      paths: servicePaths(root),
+      paths: isolatedServicePaths(root),
       launchctl: async () => ({ code: 113, stdout: '', stderr: 'not loaded' }),
     });
 
@@ -40,6 +40,21 @@ test('blocked voice state is private and visible to status', async () => {
 });
 
 
+
+test('service status includes cue output from Alfred config', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
+  await writeFile(join(root, 'config.json'), JSON.stringify({ cueOutput: 'speakers' }) + '\n');
+  try {
+    const status = await serviceStatus({
+      paths: isolatedServicePaths(root),
+      launchctl: async () => ({ code: 113, stdout: '', stderr: 'not loaded' }),
+    });
+    assert.equal(status.cueOutput, 'speakers');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('start bootstraps without synchronous kickstart hangs', async () => {
   const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
   const helper = join(root, 'helper.mjs');
@@ -52,7 +67,7 @@ console.log(JSON.stringify({ type: 'ready', detail: 'microphone=authorized audio
   process.env.ALFRED_VOICE_HELPER = helper;
   try {
     const { startService } = await import('../src/standby.ts');
-    const paths = servicePaths(root);
+    const paths = isolatedServicePaths(root);
     await startService({
       paths,
       launchctl: async (_command, args) => {
@@ -75,7 +90,7 @@ test('stop unloads launchd and records stopped state', async () => {
   const calls: string[][] = [];
   try {
     await stopService({
-      paths: servicePaths(root),
+      paths: isolatedServicePaths(root),
       launchctl: async (_command, args) => {
         calls.push(args);
         return { code: 0, stdout: '', stderr: '' };
@@ -109,9 +124,9 @@ writeFileSync(log + '.once', '1');
 `, 'utf8');
   await chmod(helper, 0o755);
   try {
-    assert.equal(await runStandby(servicePaths(root), { helper, maxCycles: 2, cue: async () => {} }), 0);
+    assert.equal(await runStandby(isolatedServicePaths(root), { helper, maxCycles: 2, cue: async () => {} }), 0);
     const invoked = (await readFile(calls, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
-    assert.deepEqual(invoked, [['clap-doctor'], ['wake-watch'], ['wake-watch']]);
+    assert.deepEqual(invoked, [['clap-doctor'], ['wake-watch', '--cue-output', 'current'], ['wake-watch', '--cue-output', 'current']]);
     await assert.rejects(readFile(audio, 'utf8'), /ENOENT/);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -123,7 +138,7 @@ test('wake watch allows a sleep-length pause before timing out', async () => {
   const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
   const calls: { args: string[]; timeoutMs: number }[] = [];
   try {
-    assert.equal(await runStandby(servicePaths(root), {
+    assert.equal(await runStandby(isolatedServicePaths(root), {
       helper: '/fake/helper', maxCycles: 1, cue: async () => {},
       runner: async (_binary, args, options) => {
         calls.push({ args, timeoutMs: options.timeoutMs });
@@ -132,7 +147,7 @@ test('wake watch allows a sleep-length pause before timing out', async () => {
         throw new Error('unexpected helper command');
       },
     }), 0);
-    assert.deepEqual(calls.map((call) => call.args), [['clap-doctor'], ['wake-watch']]);
+    assert.deepEqual(calls.map((call) => call.args), [['clap-doctor'], ['wake-watch', '--cue-output', 'current']]);
     assert.equal(calls[1].timeoutMs, 24 * 60 * 60 * 1000);
     assert.match(await readFile(join(root, 'standby', 'standby.log'), 'utf8'), /"paused"/);
   } finally {
@@ -142,7 +157,7 @@ test('wake watch allows a sleep-length pause before timing out', async () => {
 
 test('microphone status follows native ready and paused events', async () => {
   const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
-  const paths = servicePaths(root);
+  const paths = isolatedServicePaths(root);
   const readStatus = async () => JSON.parse(await readFile(paths.state, 'utf8')).status;
   const waitStatus = async (expected: string) => {
     const deadline = Date.now() + 5_000;
@@ -177,10 +192,10 @@ test('already-cancelled standby does not start a microphone helper', async () =>
   const controller = new AbortController();
   controller.abort();
   try {
-    await runStandby(servicePaths(root), { helper: '/fake/helper', signal: controller.signal,
+    await runStandby(isolatedServicePaths(root), { helper: '/fake/helper', signal: controller.signal,
       runner: async () => { throw new Error('cancelled standby must not invoke a helper'); },
     });
-    assert.equal(JSON.parse(await readFile(servicePaths(root).state, 'utf8')).status, 'stopped');
+    assert.equal(JSON.parse(await readFile(isolatedServicePaths(root).state, 'utf8')).status, 'stopped');
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -189,7 +204,7 @@ test('wake watch retries one sleep-length timeout before rearming', async () => 
   const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
   const calls: { args: string[]; timeoutMs: number }[] = [];
   try {
-    assert.equal(await runStandby(servicePaths(root), {
+    assert.equal(await runStandby(isolatedServicePaths(root), {
       helper: '/fake/helper', maxCycles: 1, cue: async () => {},
       runner: async (_binary, args, options) => {
         calls.push({ args, timeoutMs: options.timeoutMs });
@@ -199,7 +214,7 @@ test('wake watch retries one sleep-length timeout before rearming', async () => 
         throw new Error('unexpected helper command');
       },
     }), 0);
-    assert.deepEqual(calls.map((call) => call.args), [['clap-doctor'], ['wake-watch'], ['wake-watch']]);
+    assert.deepEqual(calls.map((call) => call.args), [['clap-doctor'], ['wake-watch', '--cue-output', 'current'], ['wake-watch', '--cue-output', 'current']]);
     assert.equal(calls[1].timeoutMs, 24 * 60 * 60 * 1000);
     assert.equal(calls[2].timeoutMs, 24 * 60 * 60 * 1000);
   } finally {
@@ -212,15 +227,16 @@ test('wake watch retries one sleep-length timeout before rearming', async () => 
 
 test('default wake cue is scheduled inside the next native watch after model setup', async () => {
   const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
+  await writeFile(join(root, 'config.json'), JSON.stringify({ cueOutput: 'speakers' }) + '\n');
   const calls: string[][] = [];
   try {
-    assert.equal(await runStandby(servicePaths(root), {
+    assert.equal(await runStandby(isolatedServicePaths(root), {
       helper: '/fake/helper', maxCycles: 2,
       runner: async (_binary, args, options) => {
         calls.push(args);
         if (args[0] === 'clap-doctor') return { code: 0, stdout: JSON.stringify({ type: 'ready', detail: 'microphone=authorized audioInput=true speech=unused' }) + '\n', stderr: '' };
-        if (args[0] === 'wake-watch' && args.length === 1) return { code: 0, stdout: JSON.stringify({ type: 'wake', status: 'clap', detail: { rawAudio: 'erased' } }) + '\n', stderr: '' };
-        if (args[0] === 'wake-watch' && args[1] === '--cue') {
+        if (args[0] === 'wake-watch' && !args.includes('--cue')) return { code: 0, stdout: JSON.stringify({ type: 'wake', status: 'clap', detail: { rawAudio: 'erased' } }) + '\n', stderr: '' };
+        if (args[0] === 'wake-watch' && args.includes('--cue')) {
           options.onLine?.(JSON.stringify({ type: 'cue', status: 'played', detail: 'native cue completed' }));
           options.onLine?.(JSON.stringify({ type: 'ready', detail: 'Waiting for Alfred' }));
           return { code: 0, stdout: JSON.stringify({ type: 'idle', status: 'wake' }) + '\n', stderr: '' };
@@ -228,7 +244,7 @@ test('default wake cue is scheduled inside the next native watch after model set
         throw new Error(`unexpected helper command ${args.join(' ')}`);
       },
     }), 0);
-    assert.deepEqual(calls, [['clap-doctor'], ['wake-watch'], ['wake-watch', '--cue']]);
+    assert.deepEqual(calls, [['clap-doctor'], ['wake-watch', '--cue-output', 'speakers'], ['wake-watch', '--cue', '--cue-output', 'speakers']]);
     const log = await readFile(join(root, 'standby', 'standby.log'), 'utf8');
     assert.match(log, /"type":"wake"/);
     assert.match(log, /"type":"cue"/);
@@ -244,12 +260,12 @@ test('default wake cue is scheduled inside the next native watch after model set
 test('native cue errors block instead of being reported as successful wakes', async () => {
   const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
   try {
-    assert.equal(await runStandby(servicePaths(root), {
+    assert.equal(await runStandby(isolatedServicePaths(root), {
       helper: '/fake/helper', maxCycles: 2,
       runner: async (_binary, args) => {
         if (args[0] === 'clap-doctor') return { code: 0, stdout: JSON.stringify({ type: 'ready', detail: 'microphone=authorized audioInput=true speech=unused' }) + '\n', stderr: '' };
-        if (args[0] === 'wake-watch' && args.length === 1) return { code: 0, stdout: JSON.stringify({ type: 'wake', status: 'clap', detail: { rawAudio: 'erased' } }) + '\n', stderr: '' };
-        if (args[0] === 'wake-watch' && args[1] === '--cue') return { code: 0, stdout: JSON.stringify({ type: 'error', message: 'native cue failed' }) + '\n', stderr: '' };
+        if (args[0] === 'wake-watch' && !args.includes('--cue')) return { code: 0, stdout: JSON.stringify({ type: 'wake', status: 'clap', detail: { rawAudio: 'erased' } }) + '\n', stderr: '' };
+        if (args[0] === 'wake-watch' && args.includes('--cue')) return { code: 0, stdout: JSON.stringify({ type: 'error', message: 'native cue failed' }) + '\n', stderr: '' };
         throw new Error('unexpected helper command');
       },
     }), 0);
@@ -304,7 +320,7 @@ setInterval(() => {}, 1000);
   await chmod(helper, 0o755);
   const controller = new AbortController();
   try {
-    const running = runStandby(servicePaths(root), { helper, signal: controller.signal, cue: async () => {} });
+    const running = runStandby(isolatedServicePaths(root), { helper, signal: controller.signal, cue: async () => {} });
     await waitForFile(pidFile);
     const childPid = Number(await readFile(pidFile, 'utf8'));
     controller.abort();
@@ -326,4 +342,9 @@ async function waitForFile(path: string): Promise<void> {
 
 function isRunning(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+
+function isolatedServicePaths(root: string): ReturnType<typeof servicePaths> {
+  return { ...servicePaths(root), plist: join(root, `${LABEL}.plist`) };
 }
