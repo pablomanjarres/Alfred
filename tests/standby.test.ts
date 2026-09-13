@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { access, chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import { handoffCancelledPath, handoffPath, type HandoffRecord } from '../src/handoff.ts';
 import { LABEL, buildPlist, ensureMicrophoneReady, runStandby, servicePaths, serviceStatus, startService, stopService, writeBlockedState } from '../src/standby.ts';
 
 test('LaunchAgent plist starts standby without restart storms on clean exits', () => {
@@ -253,6 +254,55 @@ test('wake watch fatal errors are not retried as audio interruption recovery', a
   }
 });
 
+
+test('standby hands off to the menu after a wake cue and exits handed off', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
+  const paths = isolatedServicePaths(root);
+  const calls: string[][] = [];
+  const handoffs: string[] = [];
+  try {
+    assert.equal(await runStandby(paths, {
+      helper: '/fake/helper', maxCycles: 3, handoff: async (trigger) => { handoffs.push(trigger); },
+      runner: async (_binary, args) => {
+        calls.push(args);
+        if (args[0] === 'clap-doctor') return { code: 0, stdout: JSON.stringify({ type: 'ready', detail: 'microphone=authorized audioInput=true speech=unused' }) + '\n', stderr: '' };
+        if (args[0] === 'wake-watch') return { code: 0, stdout: JSON.stringify({ type: 'wake', status: 'Alfred', detail: { rawAudio: 'erased' } }) + '\n', stderr: '' };
+        if (args[0] === 'wake-cue') return { code: 0, stdout: JSON.stringify({ type: 'cue', status: 'played' }) + '\n', stderr: '' };
+        throw new Error(`unexpected helper command ${args.join(' ')}`);
+      },
+    }), 0);
+
+    assert.deepEqual(calls, [['clap-doctor'], ['wake-watch', '--cue-output', 'current'], ['wake-cue', '--cue-output', 'current']]);
+    assert.deepEqual(handoffs, ['Alfred']);
+    const state = JSON.parse(await readFile(paths.state, 'utf8'));
+    assert.equal(state.status, 'handed-off');
+    assert.match(state.detail, /Voice chat is in Codex/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('standby blocks when the wake cue does not report played', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
+  const paths = isolatedServicePaths(root);
+  let handedOff = false;
+  try {
+    assert.equal(await runStandby(paths, {
+      helper: '/fake/helper', maxCycles: 1, handoff: async () => { handedOff = true; },
+      runner: async (_binary, args) => {
+        if (args[0] === 'clap-doctor') return { code: 0, stdout: JSON.stringify({ type: 'ready', detail: 'microphone=authorized audioInput=true speech=unused' }) + '\n', stderr: '' };
+        if (args[0] === 'wake-watch') return { code: 0, stdout: JSON.stringify({ type: 'wake', status: 'clap' }) + '\n', stderr: '' };
+        if (args[0] === 'wake-cue') return { code: 0, stdout: '', stderr: '' };
+        throw new Error('unexpected helper command');
+      },
+    }), 0);
+    assert.equal(handedOff, false);
+    assert.equal(JSON.parse(await readFile(paths.state, 'utf8')).status, 'blocked');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('wake watch allows a sleep-length pause before timing out', async () => {
   const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
   const calls: { args: string[]; timeoutMs: number }[] = [];
@@ -271,6 +321,54 @@ test('wake watch allows a sleep-length pause before timing out', async () => {
     assert.match(await readFile(join(root, 'standby', 'standby.log'), 'utf8'), /"paused"/);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+
+test('standby status does not cancel a pending voice handoff', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
+  const paths = isolatedServicePaths(root);
+  const pending = handoff('pending-status');
+  try {
+    await mkdir(paths.standby, { recursive: true });
+    await writeFile(handoffPath(paths), JSON.stringify(pending) + '\n', { mode: 0o600 });
+
+    await serviceStatus({
+      paths,
+      launchctl: async () => ({ code: 113, stdout: '', stderr: 'not loaded' }),
+    });
+
+    assert.deepEqual(JSON.parse(await readFile(handoffPath(paths), 'utf8')), pending);
+    await assert.rejects(readFile(handoffCancelledPath(paths), 'utf8'), /ENOENT/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('standby start and stop cancel stale voice handoffs', async () => {
+  const startRoot = await mkdtemp(join(tmpdir(), 'alfred-standby-start-'));
+  const stopRoot = await mkdtemp(join(tmpdir(), 'alfred-standby-stop-'));
+  const startPaths = isolatedServicePaths(startRoot);
+  const stopPaths = isolatedServicePaths(stopRoot);
+  const launchctl = async (_command: string, args: string[]) => ({ code: args[0] === 'print' ? 113 : 0, stdout: '', stderr: '' });
+  try {
+    await mkdir(startPaths.standby, { recursive: true });
+    await writeFile(handoffPath(startPaths), JSON.stringify(handoff('pending-start')) + '\n', { mode: 0o600 });
+    await startService({
+      paths: startPaths, helper: '/fake/helper', launchctl,
+      runner: async () => ({ code: 0, stdout: JSON.stringify({ type: 'ready', detail: 'microphone=authorized audioInput=true speech=unused' }) + '\n', stderr: '' }),
+    });
+    assert.deepEqual(JSON.parse(await readFile(handoffCancelledPath(startPaths), 'utf8')), { id: 'pending-start' });
+    assert.equal((JSON.parse(await readFile(handoffPath(startPaths), 'utf8')) as HandoffRecord).status, 'cancelled');
+
+    await mkdir(stopPaths.standby, { recursive: true });
+    await writeFile(handoffPath(stopPaths), JSON.stringify(handoff('pending-stop')) + '\n', { mode: 0o600 });
+    await stopService({ paths: stopPaths, launchctl });
+    assert.deepEqual(JSON.parse(await readFile(handoffCancelledPath(stopPaths), 'utf8')), { id: 'pending-stop' });
+    assert.equal((JSON.parse(await readFile(handoffPath(stopPaths), 'utf8')) as HandoffRecord).status, 'cancelled');
+  } finally {
+    await rm(startRoot, { recursive: true, force: true });
+    await rm(stopRoot, { recursive: true, force: true });
   }
 });
 
@@ -350,7 +448,7 @@ test('default wake cue is scheduled inside the next native watch after model set
   const calls: string[][] = [];
   try {
     assert.equal(await runStandby(isolatedServicePaths(root), {
-      helper: '/fake/helper', maxCycles: 2,
+      helper: '/fake/helper', maxCycles: 2, handoff: false,
       runner: async (_binary, args, options) => {
         calls.push(args);
         if (args[0] === 'clap-doctor') return { code: 0, stdout: JSON.stringify({ type: 'ready', detail: 'microphone=authorized audioInput=true speech=unused' }) + '\n', stderr: '' };
@@ -380,7 +478,7 @@ test('native cue errors block instead of being reported as successful wakes', as
   const root = await mkdtemp(join(tmpdir(), 'alfred-standby-'));
   try {
     assert.equal(await runStandby(isolatedServicePaths(root), {
-      helper: '/fake/helper', maxCycles: 2,
+      helper: '/fake/helper', maxCycles: 2, handoff: false,
       runner: async (_binary, args) => {
         if (args[0] === 'clap-doctor') return { code: 0, stdout: JSON.stringify({ type: 'ready', detail: 'microphone=authorized audioInput=true speech=unused' }) + '\n', stderr: '' };
         if (args[0] === 'wake-watch' && !args.includes('--cue')) return { code: 0, stdout: JSON.stringify({ type: 'wake', status: 'clap', detail: { rawAudio: 'erased' } }) + '\n', stderr: '' };
@@ -463,6 +561,11 @@ function isRunning(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
+
+
+function handoff(id: string): HandoffRecord {
+  return { id, status: 'pending', requestedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString() };
+}
 
 function isolatedServicePaths(root: string): ReturnType<typeof servicePaths> {
   return { ...servicePaths(root), plist: join(root, `${LABEL}.plist`) };
