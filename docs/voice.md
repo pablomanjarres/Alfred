@@ -41,7 +41,7 @@ Exports:
 
 Standby state and bounded logs live under `~/.alfred/standby/` with user-only permissions. Logs contain timestamps, trigger/cue outcomes, frame counts, maximum buffer duration, and `rawAudio: erased`. They never contain raw samples. The native tap rejects buffers over 250 ms, computes local wake features, and wipes PCM buffers before neural decoding. Playback failures are reported instead of being hidden.
 
-Before capture, the keyword detector warms up with generated silence. A competing “Alfredo” entry helps reject that similar name; it never activates Alfred. The detector clears a rejected match so later wake words can still work.
+Before capture, the keyword detector warms up with generated silence. A competing “Alfredo” entry helps reject that similar name; it never activates Alfred. After a short quiet pause, a fresh recognition stream starts while the previous stream finishes the word ending. At most two streams share the model, and both receive only the same short, erased audio chunks.
 
 ## Permissions
 
