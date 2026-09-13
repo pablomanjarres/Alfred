@@ -31,6 +31,76 @@ test('voice handoff writes a private pending request, opens the menu, and waits 
   }
 });
 
+
+test('already-aborted handoff does not publish a pending request or open the menu', async () => {
+  const paths = isolatedServicePaths(await mkdtemp(join(tmpdir(), 'alfred-handoff-')));
+  const controller = new AbortController();
+  controller.abort();
+  let opened = false;
+  try {
+    await assert.rejects(requestVoiceHandoff({
+      paths, signal: controller.signal, id: () => 'aborted',
+      runner: async () => { opened = true; return { code: 0, stdout: '', stderr: '' }; },
+    }), /abort/i);
+
+    assert.equal(opened, false);
+    await assert.rejects(readFile(handoffPath(paths), 'utf8'), /ENOENT/);
+  } finally {
+    await rm(paths.home, { recursive: true, force: true });
+  }
+});
+
+test('voice handoff rejects promptly when the request is replaced', async () => {
+  const paths = isolatedServicePaths(await mkdtemp(join(tmpdir(), 'alfred-handoff-')));
+  try {
+    await assert.rejects(requestVoiceHandoff({
+      paths, id: () => 'stale', timeoutMs: 1000, pollMs: 1,
+      runner: async () => {
+        await writeFile(handoffPath(paths), JSON.stringify(handoff('newer')) + '\n', { mode: 0o600 });
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    }), /replaced/);
+  } finally {
+    await rm(paths.home, { recursive: true, force: true });
+  }
+});
+
+test('voice handoff refuses a late started outcome after cancellation tombstone', async () => {
+  const paths = isolatedServicePaths(await mkdtemp(join(tmpdir(), 'alfred-handoff-')));
+  try {
+    await assert.rejects(requestVoiceHandoff({
+      paths, id: () => 'late-cancel', timeoutMs: 100, pollMs: 1,
+      runner: async () => {
+        await cancelHandoff(paths, 'late-cancel');
+        await writeFile(handoffPath(paths), JSON.stringify({ ...handoff('late-cancel'), status: 'started' }) + '\n', { mode: 0o600 });
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    }), /cancelled/);
+  } finally {
+    await rm(paths.home, { recursive: true, force: true });
+  }
+});
+
+test('cancelling handoff rereads after tombstone before marking cancelled', async () => {
+  const paths = isolatedServicePaths(await mkdtemp(join(tmpdir(), 'alfred-handoff-')));
+  const newer = handoff('newer-after-tombstone');
+  try {
+    await mkdir(paths.standby, { recursive: true });
+    await writeFile(handoffPath(paths), JSON.stringify(handoff('stale-cancel')) + '\n', { mode: 0o600 });
+
+    await cancelHandoff(paths, 'stale-cancel', {
+      afterTombstone: async () => {
+        await writeFile(handoffPath(paths), JSON.stringify(newer) + '\n', { mode: 0o600 });
+      },
+    });
+
+    assert.deepEqual(JSON.parse(await readFile(handoffCancelledPath(paths), 'utf8')), { id: 'stale-cancel' });
+    assert.deepEqual(JSON.parse(await readFile(handoffPath(paths), 'utf8')), newer);
+  } finally {
+    await rm(paths.home, { recursive: true, force: true });
+  }
+});
+
 test('voice handoff reports blocked menu outcomes', async () => {
   const paths = isolatedServicePaths(await mkdtemp(join(tmpdir(), 'alfred-handoff-')));
   await assert.rejects(requestVoiceHandoff({
@@ -76,6 +146,11 @@ test('cancelling handoff writes the tombstone before marking the request cancell
   assert.equal((await stat(handoffCancelledPath(paths))).mode & 0o777, 0o600);
   assert.equal((JSON.parse(await readFile(handoffPath(paths), 'utf8')) as HandoffRecord).status, 'cancelled');
 });
+
+
+function handoff(id: string): HandoffRecord {
+  return { id, status: 'pending', requestedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString() };
+}
 
 function isolatedServicePaths(root: string): ReturnType<typeof servicePaths> {
   return { ...servicePaths(root), plist: join(root, `${LABEL}.plist`) };

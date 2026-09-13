@@ -262,7 +262,10 @@ test('standby hands off to the menu after a wake cue and exits handed off', asyn
   const handoffs: string[] = [];
   try {
     assert.equal(await runStandby(paths, {
-      helper: '/fake/helper', maxCycles: 3, handoff: async (trigger) => { handoffs.push(trigger); },
+      helper: '/fake/helper', maxCycles: 3, handoff: async (trigger) => {
+        assert.equal(JSON.parse(await readFile(paths.state, 'utf8')).status, 'handoff');
+        handoffs.push(trigger);
+      },
       runner: async (_binary, args) => {
         calls.push(args);
         if (args[0] === 'clap-doctor') return { code: 0, stdout: JSON.stringify({ type: 'ready', detail: 'microphone=authorized audioInput=true speech=unused' }) + '\n', stderr: '' };
