@@ -28,6 +28,13 @@ final class CodexVoiceHandoff {
   }
 
   private func begin(_ request: VoiceHandoffRequest) throws {
+    switch request.action {
+    case .start: try beginStart(request)
+    case .end: try beginEnd(request)
+    }
+  }
+
+  private func beginStart(_ request: VoiceHandoffRequest) throws {
     guard Self.permissionGranted else {
       finish(request, error: "Allow Alfred in System Settings > Privacy & Security > Accessibility, then choose Start listening.")
       return
@@ -43,6 +50,17 @@ final class CodexVoiceHandoff {
       guard self?.activeID == request.id else { return }
       self?.finish(request, error: "Codex voice did not become ready. Open a Codex task, then choose Start listening.")
     }
+    if let threadURL = self.threadURL(for: request) {
+      NSWorkspace.shared.open([threadURL], withApplicationAt: url, configuration: configuration) { [weak self] app, error in
+        DispatchQueue.main.async {
+          guard let self, self.activeID == request.id else { return }
+          if let error { self.finish(request, error: "Could not open Codex task: \(error.localizedDescription)"); return }
+          guard let app else { self.finish(request, error: "Codex did not open."); return }
+          self.waitForFocus(request, app: app, url: url, deadline: Date().addingTimeInterval(5))
+        }
+      }
+      return
+    }
     NSWorkspace.shared.openApplication(at: url, configuration: configuration) { [weak self] app, error in
       DispatchQueue.main.async {
         guard let self, self.activeID == request.id else { return }
@@ -50,6 +68,32 @@ final class CodexVoiceHandoff {
         guard let app else { self.finish(request, error: "Codex did not open."); return }
         self.waitForFocus(request, app: app, url: url, deadline: Date().addingTimeInterval(5))
       }
+    }
+  }
+
+  private func beginEnd(_ request: VoiceHandoffRequest) throws {
+    guard let app = runningCodexApplication() else {
+      finish(request, status: "ended", detail: "Codex is not running.")
+      return
+    }
+    guard let url = app.bundleURL ?? CodexApplication.installedURL() else {
+      finish(request, error: "Could not locate the running Codex app.")
+      return
+    }
+    let input: VoiceInputState
+    do { input = try CodexMicrophone.inputIsActive(in: url) ? .active : .inactive }
+    catch { input = .unknown(error.localizedDescription) }
+    switch VoiceEndDecision.forInput(input) {
+    case .finishEnded(let detail):
+      finish(request, status: "ended", detail: detail)
+    case .block(let detail):
+      finish(request, error: detail)
+    case .sendEndShortcut:
+      guard try store.canDispatch(request.id) else { activeID = nil; return }
+      guard Self.permissionGranted else { finish(request, error: "Alfred voice control permission is unavailable."); return }
+      do { try postVoiceShortcut(to: app.processIdentifier) }
+      catch { finish(request, error: error.localizedDescription); return }
+      waitForEnd(request, appURL: url, deadline: Date().addingTimeInterval(8))
     }
   }
 
@@ -67,13 +111,8 @@ final class CodexVoiceHandoff {
         return
       }
       guard current(request), Self.permissionGranted else { finish(request, error: "Alfred voice control permission is unavailable."); return }
-      // Codex documents Control-Shift-V as a toggle. Send it once, only to the Codex PID.
-      guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 9, keyDown: true),
-            let up = CGEvent(keyboardEventSource: nil, virtualKey: 9, keyDown: false) else {
-        finish(request, error: "Could not send the Codex voice shortcut."); return
-      }
-      down.flags = [.maskControl, .maskShift]; up.flags = [.maskControl, .maskShift]
-      down.postToPid(app.processIdentifier); up.postToPid(app.processIdentifier)
+      do { try postVoiceShortcut(to: app.processIdentifier) }
+      catch { finish(request, error: error.localizedDescription); return }
       waitForInput(request, url: url, deadline: Date().addingTimeInterval(8))
     } catch { finish(request, error: "Could not check Codex microphone: \(error.localizedDescription)") }
   }
@@ -92,6 +131,42 @@ final class CodexVoiceHandoff {
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in self?.waitForInput(request, url: url, deadline: deadline) }
   }
 
+  private func waitForEnd(_ request: VoiceHandoffRequest, appURL: URL, deadline: Date) {
+    guard current(request) else { return }
+    guard runningCodexApplication() != nil else { finish(request, status: "ended", detail: "Codex is not running."); return }
+    do {
+      if try !CodexMicrophone.inputIsActive(in: appURL) {
+        finish(request, status: "ended", detail: "Codex voice ended.")
+        return
+      }
+    } catch { finish(request, error: "Could not confirm Codex voice ended: \(error.localizedDescription)"); return }
+    guard Date() < deadline else {
+      finish(request, error: "Codex still appears to be listening. Open Codex and end the call there.")
+      return
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in self?.waitForEnd(request, appURL: appURL, deadline: deadline) }
+  }
+
+  private func postVoiceShortcut(to pid: pid_t) throws {
+    // Codex documents Control-Shift-V as a voice toggle. Send it once, only after state checks say it is safe.
+    guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 9, keyDown: true),
+          let up = CGEvent(keyboardEventSource: nil, virtualKey: 9, keyDown: false) else {
+      throw HandoffControlError.shortcutUnavailable
+    }
+    down.flags = [.maskControl, .maskShift]; up.flags = [.maskControl, .maskShift]
+    down.postToPid(pid); up.postToPid(pid)
+  }
+
+  private func runningCodexApplication() -> NSRunningApplication? {
+    NSRunningApplication.runningApplications(withBundleIdentifier: CodexApplication.bundleIdentifier)
+      .first { !$0.isTerminated }
+  }
+
+  private func threadURL(for request: VoiceHandoffRequest) -> URL? {
+    guard let threadId = request.threadId, UUID(uuidString: threadId) != nil else { return nil }
+    return URL(string: "codex://threads/\(threadId)")
+  }
+
   private func current(_ request: VoiceHandoffRequest) -> Bool {
     guard activeID == request.id else { return false }
     do {
@@ -102,9 +177,18 @@ final class CodexVoiceHandoff {
   }
 
   private func finish(_ request: VoiceHandoffRequest, detail: String = "", error: String? = nil) {
+    finish(request, status: error == nil ? "started" : "blocked", detail: error ?? detail)
+  }
+
+  private func finish(_ request: VoiceHandoffRequest, status: String, detail: String) {
     guard activeID == request.id else { return }
-    _ = try? store.finish(request.id, status: error == nil ? "started" : "blocked", detail: error ?? detail)
+    _ = try? store.finish(request.id, status: status, detail: detail)
     activeID = nil
     changed()
+  }
+
+  private enum HandoffControlError: LocalizedError {
+    case shortcutUnavailable
+    var errorDescription: String? { "Could not send the Codex voice shortcut." }
   }
 }

@@ -1,26 +1,75 @@
 import Foundation
 
+public enum VoiceHandoffAction: String, Codable, Equatable {
+  case start
+  case end
+}
+
+public enum VoiceInputState: Equatable {
+  case noCodexProcess
+  case active
+  case inactive
+  case unknown(String)
+}
+
+public enum VoiceEndDecision: Equatable {
+  case finishEnded(String)
+  case sendEndShortcut
+  case block(String)
+
+  public static func forInput(_ input: VoiceInputState) -> VoiceEndDecision {
+    switch input {
+    case .noCodexProcess:
+      return .finishEnded("Codex is not running.")
+    case .active:
+      return .sendEndShortcut
+    case .inactive:
+      return .block("No active Codex voice call was detected. Open Codex and end the call there.")
+    case .unknown(let detail):
+      let suffix = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+      return .block(suffix.isEmpty ? "Could not confirm Codex voice state. Open Codex and end the call there." : "Could not confirm Codex voice state: \(suffix). Open Codex and end the call there.")
+    }
+  }
+}
+
 public struct VoiceHandoffRequest: Codable, Equatable {
   public let id: String
   public let status: String
   public let requestedAt: Date
   public let expiresAt: Date
   public let detail: String?
+  public let action: VoiceHandoffAction
+  public let threadId: String?
 
-  public init(id: String, status: String, requestedAt: Date, expiresAt: Date, detail: String? = nil) {
+  public init(id: String, status: String, requestedAt: Date, expiresAt: Date, detail: String? = nil, action: VoiceHandoffAction = .start, threadId: String? = nil) {
     self.id = id; self.status = status; self.requestedAt = requestedAt
     self.expiresAt = expiresAt; self.detail = detail
+    self.action = action; self.threadId = threadId
   }
 
   public func canClaim(now: Date = Date()) -> Bool { status == "pending" && isFresh(now: now) }
 
   public func isFresh(now: Date = Date()) -> Bool {
-    UUID(uuidString: id) != nil && now < expiresAt && now >= requestedAt.addingTimeInterval(-5)
+    UUID(uuidString: id) != nil && (threadId == nil || UUID(uuidString: threadId!) != nil)
+      && now < expiresAt && now >= requestedAt.addingTimeInterval(-5)
       && expiresAt > requestedAt && expiresAt.timeIntervalSince(requestedAt) <= 45
   }
 
   public func changing(status: String, detail: String? = nil) -> VoiceHandoffRequest {
-    VoiceHandoffRequest(id: id, status: status, requestedAt: requestedAt, expiresAt: expiresAt, detail: detail)
+    VoiceHandoffRequest(id: id, status: status, requestedAt: requestedAt, expiresAt: expiresAt, detail: detail, action: action, threadId: threadId)
+  }
+
+  private enum CodingKeys: String, CodingKey { case id, status, requestedAt, expiresAt, detail, action, threadId }
+
+  public init(from decoder: Decoder) throws {
+    let values = try decoder.container(keyedBy: CodingKeys.self)
+    id = try values.decode(String.self, forKey: .id)
+    status = try values.decode(String.self, forKey: .status)
+    requestedAt = try values.decode(Date.self, forKey: .requestedAt)
+    expiresAt = try values.decode(Date.self, forKey: .expiresAt)
+    detail = try values.decodeIfPresent(String.self, forKey: .detail)
+    action = try values.decodeIfPresent(VoiceHandoffAction.self, forKey: .action) ?? .start
+    threadId = try values.decodeIfPresent(String.self, forKey: .threadId)
   }
 }
 
@@ -62,7 +111,7 @@ public struct VoiceHandoffStore {
 
   @discardableResult
   public func finish(_ id: String, status: String, detail: String) throws -> Bool {
-    guard ["started", "blocked"].contains(status), try canDispatch(id), let current = try read(),
+    guard ["started", "ended", "blocked"].contains(status), try canDispatch(id), let current = try read(),
           current.id == id, current.status == "claimed" else { return false }
     try write(current.changing(status: status, detail: String(detail.prefix(500))))
     return true
