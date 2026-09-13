@@ -9,5 +9,6 @@
   <key>CFBundleVersion</key><string>1</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <key>NSMicrophoneUsageDescription</key><string>Alfred uses the microphone only when standby is on, to detect double claps and the word Alfred locally. Wake audio is discarded after processing and is never saved or sent.</string>
   <key>LSUIElement</key><true/>
 </dict></plist>

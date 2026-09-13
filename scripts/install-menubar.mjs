@@ -49,6 +49,7 @@ function waitRunning() {
 
 accessSync(sourceApp, constants.R_OK);
 accessSync(cliPath, constants.R_OK);
+run('/usr/bin/codesign', ['--verify', '--strict', sourceApp]);
 mkdirSync(dirname(targetApp), { recursive: true });
 if (existsSync(targetApp)) {
   const existing = bundleId(targetApp);
@@ -62,6 +63,8 @@ waitUnloaded();
 if (existsSync(targetApp)) rmSync(targetApp, { recursive: true, force: true });
 cpSync(sourceApp, targetApp, { recursive: true, force: true });
 chmodSync(targetExe, 0o755);
+run('/usr/bin/codesign', ['--verify', '--strict', targetApp]);
+run('/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister', ['-f', targetApp]);
 mkdirSync(dirname(configPath), { recursive: true, mode: 0o700 });
 writeFileSync(configPath, JSON.stringify({ nodePath: process.execPath, cliPath }, null, 2) + '\n', { mode: 0o600 });
 mkdirSync(dirname(plistPath), { recursive: true });
