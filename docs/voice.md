@@ -12,6 +12,7 @@ The script builds the Swift package in `native/` and assembles `dist/AlfredVoice
 
 - `AlfredVoice selftest`, which tests double-clap detection without the microphone.
 - `AlfredVoice clap-selftest`, which proves the clap watch event path and PCM buffer wiping without the microphone or Speech Recognition.
+- Packaged keyword checks with generated voices, including similar names that must stay quiet. The temporary test audio is deleted afterward.
 - `AlfredVoice doctor`, which checks recognizer, microphone authorization state, and audio input availability without prompting. First-use permission state is reported but does not fail the build script.
 
 The helper can also run from `native/.build/release/AlfredVoice`. `src/voice.ts` discovers both locations relative to the compiled `dist/voice.js`; `ALFRED_VOICE_HELPER=/path/to/AlfredVoice` overrides discovery for tests and development.
@@ -39,6 +40,8 @@ Exports:
 `alfred standby start` installs and starts `~/Library/LaunchAgents/com.pablo.alfred.standby.plist`. It waits for a double clap or “Alfred” and wakes the display. After a trigger, it prepares the next listener, plays a short cue through your current audio output, then starts capture. Wait for the cue to finish before another attempt. It never invokes Apple Speech, Codex, or transcription from standby. Use `alfred standby stop` to unload it and `alfred standby status` to check it.
 
 Standby state and bounded logs live under `~/.alfred/standby/` with user-only permissions. Logs contain timestamps, trigger/cue outcomes, frame counts, maximum buffer duration, and `rawAudio: erased`. They never contain raw samples. The native tap rejects buffers over 250 ms, computes local wake features, and wipes PCM buffers before neural decoding. Playback failures are reported instead of being hidden.
+
+Before capture, the keyword detector warms up with generated silence. A competing “Alfredo” entry helps reject that similar name; it never activates Alfred. The detector clears a rejected match so later wake words can still work.
 
 ## Permissions
 
