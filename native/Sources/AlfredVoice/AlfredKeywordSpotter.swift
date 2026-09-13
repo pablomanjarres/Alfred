@@ -44,6 +44,13 @@ final class AlfredKeywordSpotter: WakeKeywordSpotting {
       SherpaOnnxDestroyKeywordSpotter(createdSpotter)
       throw WakeAudioError(description: "could not create Alfred keyword stream")
     }
+    do {
+      try Self.prime(createdSpotter, stream: createdStream)
+    } catch {
+      AlfredKwsFinishAndDestroyStream(createdStream)
+      SherpaOnnxDestroyKeywordSpotter(createdSpotter)
+      throw error
+    }
     spotter = createdSpotter
     stream = createdStream
   }
@@ -75,6 +82,10 @@ final class AlfredKeywordSpotter: WakeKeywordSpotting {
       guard let keywordPointer = result.pointee.keyword else { continue }
       let keyword = String(cString: keywordPointer)
       if keyword == "ALFRED" { return true }
+      if !keyword.isEmpty {
+        SherpaOnnxResetKeywordStream(spotter, stream)
+        return false
+      }
     }
     return false
   }
@@ -92,6 +103,29 @@ final class AlfredKeywordSpotter: WakeKeywordSpotting {
 
   deinit {
     close()
+  }
+
+  private static func prime(_ spotter: OpaquePointer, stream: OpaquePointer) throws {
+    let silence = [Float](repeating: 0, count: Int(ALFRED_KWS_MAX_CHUNK_SAMPLES))
+    try silence.withUnsafeBufferPointer { buffer in
+      guard let baseAddress = buffer.baseAddress else {
+        throw WakeAudioError(description: "could not prime Alfred keyword stream")
+      }
+      for _ in 0..<5 {
+        let status = AlfredKwsAccept16k100ms(stream, baseAddress, Int32(buffer.count))
+        guard status == ALFRED_KWS_OK else {
+          throw WakeAudioError(description: "Alfred keyword prime failed: \(Self.statusName(status))")
+        }
+        while SherpaOnnxIsKeywordStreamReady(spotter, stream) == 1 {
+          SherpaOnnxDecodeKeywordStream(spotter, stream)
+          guard let result = SherpaOnnxGetKeywordResult(spotter, stream) else { continue }
+          if let keywordPointer = result.pointee.keyword, !String(cString: keywordPointer).isEmpty {
+            SherpaOnnxResetKeywordStream(spotter, stream)
+          }
+          SherpaOnnxDestroyKeywordResult(result)
+        }
+      }
+    }
   }
 
   private static func statusName(_ status: AlfredKwsStatus) -> String {
