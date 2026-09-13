@@ -26,7 +26,9 @@ final class CodexTaskSelection {
     let before = pasteboard.changeCount
     do { try postCopyLinkShortcut(to: app.processIdentifier) }
     catch { completion(.failure(error)); return }
-    waitForProbe(threadId: threadId, app: app, snapshot: snapshot, before: before, deadline: minDate(deadline, Date().addingTimeInterval(1)), isCurrent: isCurrent) { [weak self] result in
+    waitForProbe(threadId: threadId, app: app, snapshot: snapshot, before: before,
+                 pollDeadline: minDate(deadline, Date().addingTimeInterval(1)), overallDeadline: deadline,
+                 isCurrent: isCurrent) { [weak self] result in
       guard let self else { completion(.failure(Error.cancelled)); return }
       switch result {
       case .success(true): completion(.success(()))
@@ -40,34 +42,43 @@ final class CodexTaskSelection {
   }
 
   private func waitForProbe(threadId: String, app: NSRunningApplication, snapshot: ClipboardSnapshot, before: Int,
-                            deadline: Date, isCurrent: @escaping () -> Bool, completion: @escaping (Result<Bool, Swift.Error>) -> Void) {
-    guard isCurrent() else { completion(.failure(Error.cancelled)); return }
+                            pollDeadline: Date, overallDeadline: Date, isCurrent: @escaping () -> Bool,
+                            completion: @escaping (Result<Bool, Swift.Error>) -> Void) {
     let currentCount = pasteboard.changeCount
     let link = pasteboard.string(forType: .string)
     let frontmost = NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier
-    guard frontmost else { completion(.failure(Error.notFrontmost)); return }
     let changed = currentCount != before
-    if VoiceTaskSelection.canRestoreProbeResult(threadId: threadId, copiedLink: link, clipboardChanged: changed,
-                                                appIsFrontmost: frontmost, clipboardUnchangedSinceProbe: pasteboard.changeCount == currentCount) {
+    let current = isCurrent()
+    let unchanged = pasteboard.changeCount == currentCount
+    let outcome = VoiceTaskSelection.probeOutcome(threadId: threadId, copiedLink: link, clipboardChanged: changed,
+                                                  appIsFrontmost: frontmost, expired: Date() >= overallDeadline,
+                                                  requestIsCurrent: current)
+    if outcome != .confirmed,
+       VoiceTaskSelection.canRestoreProbeClipboard(copiedLink: link, clipboardChanged: changed,
+                                                   appIsFrontmost: true, clipboardUnchangedSinceProbe: unchanged) {
+      do { try snapshot.restore(to: pasteboard, replacingChangeCount: currentCount) }
+      catch { completion(.failure(error)); return }
+    }
+    switch outcome {
+    case .confirmed:
+      guard VoiceTaskSelection.canRestoreProbeResult(threadId: threadId, copiedLink: link, clipboardChanged: changed,
+                                                     appIsFrontmost: frontmost, clipboardUnchangedSinceProbe: unchanged) else {
+        completion(.failure(Error.clipboardChanged)); return
+      }
       do { try snapshot.restore(to: pasteboard, replacingChangeCount: currentCount); completion(.success(true)) }
       catch { completion(.failure(error)) }
-      return
-    }
-    if changed {
-      if VoiceTaskSelection.canRestoreProbeClipboard(copiedLink: link, clipboardChanged: changed,
-                                                     appIsFrontmost: frontmost,
-                                                     clipboardUnchangedSinceProbe: pasteboard.changeCount == currentCount) {
-        do { try snapshot.restore(to: pasteboard, replacingChangeCount: currentCount) }
-        catch { completion(.failure(error)); return }
-        completion(.failure(Error.selectionMismatch))
-      } else {
-        completion(.failure(Error.clipboardChanged))
+    case .waiting:
+      if changed { completion(.success(false)); return }
+      guard Date() < pollDeadline else { completion(.success(false)); return }
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+        self?.waitForProbe(threadId: threadId, app: app, snapshot: snapshot, before: before,
+                           pollDeadline: pollDeadline, overallDeadline: overallDeadline, isCurrent: isCurrent, completion: completion)
       }
-      return
-    }
-    guard Date() < deadline else { completion(.success(false)); return }
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-      self?.waitForProbe(threadId: threadId, app: app, snapshot: snapshot, before: before, deadline: deadline, isCurrent: isCurrent, completion: completion)
+    case .blocked:
+      if !current { completion(.failure(Error.cancelled)) }
+      else if !frontmost { completion(.failure(Error.notFrontmost)) }
+      else if Date() >= overallDeadline { completion(.failure(Error.timeout)) }
+      else { completion(.failure(Error.clipboardChanged)) }
     }
   }
 
@@ -113,12 +124,12 @@ final class CodexTaskSelection {
 
     func restore(to pasteboard: NSPasteboard, replacingChangeCount changeCount: Int) throws {
       guard pasteboard.changeCount == changeCount else { throw Error.clipboardChanged }
-      pasteboard.clearContents()
       let restored = try items.map { saved -> NSPasteboardItem in
         let item = NSPasteboardItem()
         for (type, data) in saved where !item.setData(data, forType: type) { throw Error.clipboardReadFailed }
         return item
       }
+      pasteboard.clearContents()
       guard pasteboard.writeObjects(restored) || restored.isEmpty else { throw Error.clipboardReadFailed }
     }
   }

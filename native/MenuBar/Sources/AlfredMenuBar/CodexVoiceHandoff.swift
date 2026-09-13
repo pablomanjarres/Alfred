@@ -138,7 +138,7 @@ final class CodexVoiceHandoff {
           DispatchQueue.main.async {
             guard let self, self.activeID == request.id else { return }
             switch result {
-            case .success: self.startVoice(request, app: app, url: url)
+            case .success: self.startVoiceAfterConfirmedSelection(request, app: app, url: url)
             case .failure(let error): self.finish(request, error: error.localizedDescription)
             }
           }
@@ -147,6 +147,22 @@ final class CodexVoiceHandoff {
       }
       startVoice(request, app: app, url: url)
     } catch { finish(request, error: "Could not check Codex microphone: \(error.localizedDescription)") }
+  }
+
+  private func startVoiceAfterConfirmedSelection(_ request: VoiceHandoffRequest, app: NSRunningApplication, url: URL) {
+    guard current(request) else { return }
+    guard !app.isTerminated else { finish(request, error: "Codex closed before voice started."); return }
+    guard NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier else {
+      finish(request, error: "Bring Codex to the front, then choose Start listening.")
+      return
+    }
+    do {
+      if try CodexMicrophone.inputIsActive(in: url) {
+        finish(request, error: "Codex already has the microphone. End the call, then choose Start listening.")
+        return
+      }
+    } catch { finish(request, error: "Could not check Codex microphone: \(error.localizedDescription)"); return }
+    startVoice(request, app: app, url: url)
   }
 
   private func startVoice(_ request: VoiceHandoffRequest, app: NSRunningApplication, url: URL) {

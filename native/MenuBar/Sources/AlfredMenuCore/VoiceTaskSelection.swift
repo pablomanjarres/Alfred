@@ -1,5 +1,11 @@
 import Foundation
 
+public enum VoiceTaskProbeOutcome {
+  case waiting
+  case confirmed
+  case blocked
+}
+
 public enum VoiceTaskSelection {
   public static func confirms(threadId: String, copiedLink: String?, clipboardChanged: Bool, appIsFrontmost: Bool) -> Bool {
     guard let target = UUID(uuidString: threadId),
@@ -17,6 +23,16 @@ public enum VoiceTaskSelection {
                                               appIsFrontmost: Bool, clipboardUnchangedSinceProbe: Bool) -> Bool {
     clipboardUnchangedSinceProbe && copiedThreadId(copiedLink: copiedLink, clipboardChanged: clipboardChanged,
                                                    appIsFrontmost: appIsFrontmost) != nil
+  }
+
+  public static func probeOutcome(threadId: String, copiedLink: String?, clipboardChanged: Bool,
+                                  appIsFrontmost: Bool, expired: Bool, requestIsCurrent: Bool) -> VoiceTaskProbeOutcome {
+    guard requestIsCurrent, appIsFrontmost, !expired, UUID(uuidString: threadId) != nil else { return .blocked }
+    guard clipboardChanged else { return .waiting }
+    guard let copied = copiedThreadId(copiedLink: copiedLink, clipboardChanged: clipboardChanged, appIsFrontmost: appIsFrontmost) else {
+      return .blocked
+    }
+    return copied.uuidString.caseInsensitiveCompare(threadId) == .orderedSame ? .confirmed : .waiting
   }
 
   private static func copiedThreadId(copiedLink: String?, clipboardChanged: Bool, appIsFrontmost: Bool) -> UUID? {
