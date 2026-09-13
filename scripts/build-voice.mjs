@@ -37,6 +37,7 @@ cpSync(join(nativeRoot, '.build', 'release', 'AlfredVoice'), join(macos, 'Alfred
 cpSync(join(nativeRoot, 'Resources', 'Info.plist'), join(contents, 'Info.plist'));
 
 run(join(macos, 'AlfredVoice'), ['selftest']);
+run(join(macos, 'AlfredVoice'), ['clap-selftest']);
 run(join(macos, 'AlfredVoice'), ['doctor'], { allowFailure: true });
 
 console.log(`Built ${appRoot}`);

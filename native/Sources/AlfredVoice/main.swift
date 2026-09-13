@@ -123,7 +123,7 @@ final class ClapDetector {
     return sawFirst && time - lastClap < 0.9
   }
 }
-func selftest() {
+func detectorSelftest() -> Bool {
   let clap = ClapDetector()
   let hit = [
     clap.push(rms: 0.01, peak: 0.03, time: 0.00),
@@ -136,12 +136,13 @@ func selftest() {
   for i in 0..<12 {
     rejected = rejected && !speech.push(rms: 0.24, peak: 0.64, time: Double(i) * 0.07)
   }
+  return hit && rejected
+}
+func selftest() {
   let callbackRan = Locked(false)
-  DispatchQueue.main.async {
-    callbackRan.set(true)
-  }
+  DispatchQueue.main.async { callbackRan.set(true) }
   let mainCallbackRuns = waitUntil(Date().addingTimeInterval(0.5), { callbackRan.get() })
-  if hit && rejected && mainCallbackRuns { emit("ready", ["status": "selftest", "detail": "clap detector ok"]) }
+  if detectorSelftest() && mainCallbackRuns { emit("ready", ["status": "selftest", "detail": "clap detector ok"]) }
   else { fail("clap detector selftest failed") }
 }
 func transcribeFile(_ path: String, _ locale: String) {
@@ -203,43 +204,116 @@ func listenOnce(_ locale: String) {
   if finalText.get().isEmpty { fail("no final transcript produced") }
   emit("transcript", ["text": finalText.get()])
 }
+
+func authorizeClap() {
+  authorizeMic()
+  clapDoctor()
+}
+func clapDoctor() {
+  let mic = AVCaptureDevice.authorizationStatus(for: .audio)
+  let hasInput = AVCaptureDevice.default(for: .audio) != nil
+  let detail = "microphone=\(authName(mic)) audioInput=\(hasInput) speech=unused"
+  if mic != .authorized || !hasInput { fail("microphone is not ready: \(detail)") }
+  emit("ready", ["status": "clap", "detail": detail])
+}
+func clapFeaturesAndWipe(_ buffer: AVAudioPCMBuffer) -> (rms: Float, peak: Float, frameDuration: Double, capacityDuration: Double, valid: Bool) {
+  let frames = Int(buffer.frameLength)
+  let capacity = Int(buffer.frameCapacity)
+  let channels = Int(buffer.format.channelCount)
+  let sampleRate = buffer.format.sampleRate
+  let frameDuration = sampleRate > 0 ? Double(frames) / sampleRate : 0
+  let capacityDuration = sampleRate > 0 ? Double(capacity) / sampleRate : 0
+  guard buffer.format.commonFormat == .pcmFormatFloat32, !buffer.format.isInterleaved, let data = buffer.floatChannelData else {
+    return (0, 0, frameDuration, capacityDuration, false)
+  }
+  var sum: Float = 0
+  var peak: Float = 0
+  defer {
+    for channelIndex in 0..<channels {
+      let channel = data[channelIndex]
+      for index in 0..<capacity { channel[index] = 0 }
+    }
+  }
+  for channelIndex in 0..<channels {
+    let channel = data[channelIndex]
+    for index in 0..<frames {
+      let sample = abs(channel[index])
+      peak = max(peak, sample)
+      sum += sample * sample
+    }
+  }
+  return (sqrt(sum / Float(max(frames * max(channels, 1), 1))), peak, frameDuration, capacityDuration, true)
+}
+func clapPrivacySelftest() {
+  guard let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2),
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 2048) else { fail("could not build clap fixture") }
+  buffer.frameLength = 1024
+  guard let data = buffer.floatChannelData else { fail("could not access clap fixture") }
+  data[0][0] = 0.8; data[0][1] = -0.4; data[0][1500] = 0.5; data[1][0] = -0.7; data[1][1] = 0.2; data[1][1500] = -0.5
+  let features = clapFeaturesAndWipe(buffer)
+  var wiped = true
+  for channelIndex in 0..<2 { for index in 0..<Int(buffer.frameCapacity) { wiped = wiped && data[channelIndex][index] == 0 } }
+  guard let oversize = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 48_001) else { fail("could not build oversized clap fixture") }
+  oversize.frameLength = 1024
+  guard let oversizeData = oversize.floatChannelData else { fail("could not access oversized clap fixture") }
+  oversizeData[0][48_000] = 0.9
+  let oversizeFeatures = clapFeaturesAndWipe(oversize)
+  let oversizeWiped = oversizeData[0][48_000] == 0 && oversizeFeatures.capacityDuration > 1
+  if detectorSelftest() && wiped && oversizeWiped && features.valid && features.frameDuration <= 1 && features.capacityDuration <= 1 && features.peak >= 0.8 {
+    emit("ready", ["status": "clap"])
+    emit("clap", ["status": "clap", "detail": "speech=unused audio=not-retained"])
+    emit("idle", ["status": "clap"])
+  } else { fail("clap privacy selftest failed") }
+}
+
 func waitForClap() -> Bool {
   authorizeMic()
   let engine = AVAudioEngine()
   let input = engine.inputNode
   let detector = ClapDetector()
   let heard = Locked(false)
+  let frameCount = Locked(0)
+  let maxBufferSeconds = Locked(0.0)
+  let maxCapacitySeconds = Locked(0.0)
+  let lastFrameAt = Locked(0.0)
+  let privacyFailure = Locked<String?>(nil)
   let start = Date()
-  emit("ready", ["status": "ready"])
+  func proof() -> [String: Any] {
+    ["frames": frameCount.get(), "lastFrameAt": lastFrameAt.get(), "maxBufferSeconds": maxBufferSeconds.get(), "maxCapacitySeconds": maxCapacitySeconds.get(), "speech": "unused"]
+  }
+  emit("ready", ["status": "ready", "detail": "speech=unused audio=not-retained maxBufferSeconds<=1"])
   emit("listening", ["status": "clap"])
   input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { buffer, _ in
-    guard let channel = buffer.floatChannelData?[0] else { return }
-    let count = Int(buffer.frameLength)
-    var sum: Float = 0
-    var peak: Float = 0
-    for index in 0..<count {
-      let sample = abs(channel[index])
-      peak = max(peak, sample)
-      sum += sample * sample
-    }
-    let rms = sqrt(sum / Float(max(count, 1)))
-    if detector.push(rms: rms, peak: peak, time: Date().timeIntervalSince(start)) { heard.set(true) }
+    let features = clapFeaturesAndWipe(buffer)
+    frameCount.set(frameCount.get() + Int(buffer.frameLength))
+    maxBufferSeconds.set(max(maxBufferSeconds.get(), features.frameDuration))
+    maxCapacitySeconds.set(max(maxCapacitySeconds.get(), features.capacityDuration))
+    lastFrameAt.set(Date().timeIntervalSince1970)
+    guard features.valid else { privacyFailure.set("unsupported clap audio format") ; return }
+    guard features.frameDuration <= 1 && features.capacityDuration <= 1 else { privacyFailure.set("clap audio buffer exceeded one second") ; return }
+    if detector.push(rms: features.rms, peak: features.peak, time: Date().timeIntervalSince(start)) { heard.set(true) }
   }
   do { try engine.start() } catch { fail("audio engine could not start: \(error.localizedDescription)") }
-  let detected = waitUntil(Date().addingTimeInterval(120), { heard.get() })
+  let detected = waitUntil(Date().addingTimeInterval(120), { heard.get() || privacyFailure.get() != nil })
   engine.stop()
   input.removeTap(onBus: 0)
+  if let privacyFailure = privacyFailure.get() { fail(privacyFailure) }
   if !detected {
-    emit("idle", ["status": "clap"])
+    emit("idle", ["status": "clap", "detail": proof()])
     return false
   }
   _ = Process.launchedProcess(launchPath: "/usr/bin/caffeinate", arguments: ["-u", "-t", "3"])
+  emit("clap", ["status": "clap", "detail": proof()])
   return true
 }
 let options = parseOptions()
 switch options.command {
 case "doctor": doctor(options.locale)
+case "clap-authorize": authorizeClap()
+case "clap-doctor": clapDoctor()
 case "selftest": selftest()
+case "clap-selftest": clapPrivacySelftest()
+case "clap-watch": _ = waitForClap()
 case "file":
   guard let file = options.file else { fail("file mode requires --file") }
   transcribeFile(file, options.locale)
